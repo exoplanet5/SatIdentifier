@@ -509,6 +509,19 @@ died to one `document.visibilityState` check.
 | 1 | Debris colour too close to payload | Default DEB moved brown-grey → pink `#f06292`: at trail alpha the brown read as a darker yellow beside the dominant PAY |
 | 2 | Let the user choose the object-type colours | Four swatches + reset in the Crossings filter row, persisted as `settings.typeColors`; every consumer (chart trails/markers, all-sky, table cells and chips) resolves through the one authority `SAT.state.typeColorOf`, so an override repaints everything at once. Verified live: an override was seen by the resolver, survived the debounced save to disk, and reset restored the defaults |
 
+### Round 7 (2026-07-21)
+
+| # | Feedback | Change |
+|---|---|---|
+| 1 | Camera preset dropdown too verbose; Camera line should be as short as the coordinate rows | Dropdown capped to the coordinate-field width with terse placeholders ("— presets —" / "— none saved —"); name field shrunk to match |
+| 2 | Sexagesimal/decimal inputs leave dead space after the coordinates | Widths are now ch-based, sized to the longest legal value ("23 59 59.9" = 11ch, "194.8326" = 9ch) instead of fixed pixels |
+| 3 | Altitude km column before Range km, at closest approach | New default column reading the same `c.altKm` the altitude filter tests (one number, two consumers, no drift); saved column sets migrate via `columnsVer` 2, preserving user customisations — verified against a column set the user had already edited |
+
+macOS app rebuilt and re-verified after the round (launch, port-fallback to 8477
+beside the dev server, new table served from the bundle, clean quit);
+`release/SatIdentifier-macOS-arm64.zip` refreshed, and the CI-built
+`SatIdentifier-windows-x64.zip` pulled in from origin.
+
 ## 13. Running the checks
 
 ```sh

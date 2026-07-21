@@ -148,6 +148,11 @@
       val: c => c.azDeg, text: c => fixed(c.azDeg, 1) + (isNum(c.azDeg) ? '°' : '') },
     { key: 'el', label: 'El', def: true, num: true,
       val: c => c.elDeg, text: c => fixed(c.elDeg, 1) + (isNum(c.elDeg) ? '°' : '') },
+    { key: 'alt', label: 'Alt km', def: true, num: true,
+      val: c => (isNum(c.altKm) ? c.altKm : null),
+      text: c => fmtKm(c.altKm),
+      // same number the altitude filter tests — geodetic height at closest approach
+      title: () => 'geodetic height at closest approach' },
     { key: 'range', label: 'Range km', def: true, num: true,
       val: c => c.rangeKm, text: c => fmtKm(c.rangeKm) },
     { key: 'rate', label: () => 'Rate ″/s (' + frameTag() + ')', def: true, num: true,
@@ -393,6 +398,15 @@
           s.columns.splice(at < 0 ? s.columns.length : at, 0, 'type');
         }
         s.columnsVer = 1;
+        SAT.state.save();
+      }
+      // v2 (round 7): Alt km before Range km
+      if (s.columnsVer < 2) {
+        if (s.columns.indexOf('alt') < 0) {
+          const at = s.columns.indexOf('range');
+          s.columns.splice(at < 0 ? s.columns.length : at, 0, 'alt');
+        }
+        s.columnsVer = 2;
         SAT.state.save();
       }
       return s.columns;

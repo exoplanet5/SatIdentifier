@@ -69,8 +69,11 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
       // so the full YYYY-MM-DD HH:MM:SS is never truncated (round-1 complaint)
       '.pnt-time{width:calc(19ch + 18px);flex:none;}',
       '.pnt-num{width:64px;font-family:var(--mono);text-align:right;flex:none;}',
-      '.pnt-dnum{width:86px;font-family:var(--mono);text-align:right;flex:none;}',
-      '.pnt-wide{width:116px;font-family:var(--mono);flex:none;}',
+      // ch-based widths sized to the longest legal value ("23 59 59.9" = 10ch,
+      // "194.8326" = 8ch) + input chrome — the round-7 review found the old fixed
+      // pixel widths left dead space after the coordinates
+      '.pnt-dnum{width:calc(9ch + 18px);font-family:var(--mono);text-align:right;flex:none;}',
+      '.pnt-wide{width:calc(11ch + 18px);font-family:var(--mono);flex:none;}',
       '.pnt-tog.on{background:var(--accent-dim);border-color:var(--accent-dim);color:#fff;}',
       '.pnt-bad{border-color:var(--danger)!important;color:var(--danger)!important;}',
       '.pnt-msg{min-height:14px;color:var(--fg-dim);font-size:11px;overflow:hidden;',
@@ -301,7 +304,7 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     if (!ui) return;
     clear(ui.camSel);
     ui.camSel.appendChild(U.el('option', { value: '' },
-      userCameras().length ? '— camera preset —' : '— no presets: set a FOV and press + Save —'));
+      userCameras().length ? '— presets —' : '— none saved —'));
     userCameras().forEach(c => {
       ui.camSel.appendChild(U.el('option', { value: 'u' + c.id }, c.name));
     });
@@ -594,7 +597,12 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
       refresh();
     });
 
-    const camSel = el('select', { class: 'select', id: 'pnt-cam' });
+    // width capped so the Camera line stays as short as the coordinate rows
+    // (round-7 review); the select ellipsises long preset names itself
+    const camSel = el('select', {
+      class: 'select', id: 'pnt-cam',
+      style: 'width:calc(11ch + 18px);max-width:calc(11ch + 18px)',
+    });
     camSel.addEventListener('change', () => {
       const c = cameraByKey(camSel.value);
       if (!c) return;
@@ -605,7 +613,7 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
       refresh();
     });
     const camName = el('input', {
-      class: 'input', id: 'pnt-camname', placeholder: 'preset name', style: 'width:104px',
+      class: 'input', id: 'pnt-camname', placeholder: 'name', style: 'width:calc(9ch + 18px)',
     });
     const camSave = el('button', {
       class: 'btn small', id: 'pnt-camsave', title: 'save the current FOV as a preset',

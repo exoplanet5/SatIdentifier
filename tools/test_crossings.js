@@ -196,9 +196,9 @@ SAT.state.save = () => {};   // no backend in this harness
 
 // turn every column on so each one can be sorted
 SAT.state.settings.columns = ['name', 'norad', 'intl', 'type', 'cls', 'enter', 'ca', 'exit',
-  'dur', 'sep', 'radec', 'az', 'el', 'range', 'rate', 'pa', 'rateAlt', 'paAlt', 'mag',
-  'method', 'sunlit', 'age'];
-const NCOLS = SAT.state.settings.columns.length;   // 22 (round 4 added 'type')
+  'dur', 'sep', 'radec', 'az', 'el', 'alt', 'range', 'rate', 'pa', 'rateAlt', 'paAlt',
+  'mag', 'method', 'sunlit', 'age'];
+const NCOLS = SAT.state.settings.columns.length;   // 23 (r4 'type', r7 'alt')
 SAT.state.obs.track = 'sky';
 
 /* ==================== harness ==================== */
