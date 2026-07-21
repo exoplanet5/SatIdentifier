@@ -1,0 +1,58 @@
+name: build-windows
+
+# Builds the Windows standalone app on a Windows runner (PyInstaller cannot
+# cross-compile) and commits the zip back into release/.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'server.py'
+      - 'desktop.py'
+      - 'app/**'
+      - 'build_icon/SatIdentifier.ico'
+      - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-windows
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install pywebview pyinstaller
+
+      - name: Build with PyInstaller
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name SatIdentifier
+          --icon build_icon/SatIdentifier.ico --add-data "app;app"
+          --collect-all webview desktop.py
+
+      - name: Zip the app folder
+        run: Compress-Archive -Path dist/SatIdentifier -DestinationPath release/SatIdentifier-windows-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SatIdentifier-windows-x64
+          path: release/SatIdentifier-windows-x64.zip
+
+      - name: Commit release zip
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release/SatIdentifier-windows-x64.zip
+          git commit -m "Windows build: release/SatIdentifier-windows-x64.zip [skip ci]"
+          git pull --rebase origin main
+          git push

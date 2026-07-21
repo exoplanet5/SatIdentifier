@@ -1,0 +1,14 @@
+# user data: saved state, TLE caches, and Space-Track credentials in plaintext
+data/
+
+# build
+.venv-build/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# icon intermediates (the .icns/.ico are committed, the iconset is not)
+build_icon/*.iconset/
+
+.DS_Store
