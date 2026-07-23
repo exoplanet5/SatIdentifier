@@ -23,6 +23,15 @@
       SAT.bus.emit('locations-changed', {});
     }
 
+    // Coordinates are stored and shown at 4 decimals (~11 m) — finer than the
+    // arcminute-level truth TLEs support, and fixed decimals keep the columns
+    // aligned. Widths are ch-based on the longest legal value ("-179.1234").
+    const r4 = v => Math.round(v * 1e4) / 1e4;
+    const W_NAME = 'width:90px';
+    const W_LAT = 'width:calc(8ch + 18px)';
+    const W_LON = 'width:calc(9ch + 18px)';
+    const W_ALT = 'width:calc(5ch + 18px)';
+
     // brief red flash on an input whose edit was rejected
     function rejectEdit(input, msg) {
       input.style.borderColor = 'var(--danger)';
@@ -47,23 +56,23 @@
         // Colour is cosmetic, so it does not invalidate a scan that may have taken
         // ten seconds to run.
         col.addEventListener('input', () => { loc.color = col.value; commit(false); });
-        const nameIn = U.el('input', { class: 'input', value: loc.name, style: 'width:130px' });
+        const nameIn = U.el('input', { class: 'input', value: loc.name, style: W_NAME });
         nameIn.addEventListener('change', () => { loc.name = nameIn.value.trim() || loc.name; commit(false); });
-        const latIn = U.el('input', { class: 'input', value: loc.latDeg, style: 'width:75px' });
+        const latIn = U.el('input', { class: 'input', value: loc.latDeg.toFixed(4), style: W_LAT });
         latIn.addEventListener('change', () => {
           const v = parseFloat(latIn.value);
-          if (isFinite(v) && Math.abs(v) <= 90) { loc.latDeg = v; commit(); }
+          if (isFinite(v) && Math.abs(v) <= 90) { loc.latDeg = r4(v); commit(); }
           else rejectEdit(latIn, 'latitude must be a number in −90…90');
-          latIn.value = loc.latDeg;
+          latIn.value = loc.latDeg.toFixed(4);
         });
-        const lonIn = U.el('input', { class: 'input', value: loc.lonDeg, style: 'width:80px' });
+        const lonIn = U.el('input', { class: 'input', value: loc.lonDeg.toFixed(4), style: W_LON });
         lonIn.addEventListener('change', () => {
           const v = parseFloat(lonIn.value);
-          if (isFinite(v) && Math.abs(v) <= 180) { loc.lonDeg = U.wrapLon(v); commit(); }
+          if (isFinite(v) && Math.abs(v) <= 180) { loc.lonDeg = r4(U.wrapLon(v)); commit(); }
           else rejectEdit(lonIn, 'longitude must be a number in −180…180');
-          lonIn.value = loc.lonDeg;
+          lonIn.value = loc.lonDeg.toFixed(4);
         });
-        const altIn = U.el('input', { class: 'input', value: loc.altM, style: 'width:60px' });
+        const altIn = U.el('input', { class: 'input', value: loc.altM, style: W_ALT });
         altIn.addEventListener('change', () => {
           const v = parseFloat(altIn.value);
           if (isFinite(v)) { loc.altM = v; commit(); }
@@ -92,10 +101,10 @@
     }
 
     // add form
-    const aName = U.el('input', { class: 'input', placeholder: 'name', style: 'width:130px' });
-    const aLat = U.el('input', { class: 'input', placeholder: 'lat °N', style: 'width:75px' });
-    const aLon = U.el('input', { class: 'input', placeholder: 'lon °E', style: 'width:80px' });
-    const aAlt = U.el('input', { class: 'input', placeholder: 'alt m', style: 'width:60px', value: '0' });
+    const aName = U.el('input', { class: 'input', placeholder: 'name', style: W_NAME });
+    const aLat = U.el('input', { class: 'input', placeholder: 'lat °N', style: W_LAT });
+    const aLon = U.el('input', { class: 'input', placeholder: 'lon °E', style: W_LON });
+    const aAlt = U.el('input', { class: 'input', placeholder: 'alt m', style: W_ALT, value: '0' });
     const aErr = U.el('span', { class: 'err' }, '');
     const addBtn = U.el('button', {
       class: 'btn primary small', onclick: () => {
@@ -105,7 +114,7 @@
         if (!isFinite(lon) || Math.abs(lon) > 180) { aErr.textContent = 'lon must be −180…180'; return; }
         SAT.state.locations.push({
           id: U.uuid('loc'), name: aName.value.trim() || 'Site ' + (SAT.state.locations.length + 1),
-          latDeg: lat, lonDeg: U.wrapLon(lon), altM: alt,
+          latDeg: r4(lat), lonDeg: r4(U.wrapLon(lon)), altM: alt,
           active: SAT.state.locations.length === 0, color: '#ff5252',
         });
         aName.value = aLat.value = aLon.value = ''; aAlt.value = '0';
