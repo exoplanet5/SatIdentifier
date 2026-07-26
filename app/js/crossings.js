@@ -763,6 +763,9 @@
     function horizonHint() {
       const st = SAT.state, site = st.activeLocation(), o = st.obs;
       if (!site || !SAT.frames || !st.scan.ranAt) return null;
+      // "below the horizon all span" is ground reasoning; an orbit site's empty
+      // result already has honest cull counts and no horizon to blame.
+      if ((site.kind || 'ground') === 'orbit') return null;
       const t0 = st.scan.params && st.scan.params.t0Ms;
       if (t0 == null) return null;
       const span = (o.spanMin || 0) * 60000;

@@ -60,6 +60,10 @@ global.satellite = require(path.join(APP, 'vendor', 'satellite.min.js'));
 global.SAT = { ui: {} };
 require(path.join(APP, 'util.js'));
 require(path.join(APP, 'frames.js'));
+// real propagate.js: chart.js routes every alt/az conversion through SAT.prop's
+// kind-dispatching converters since the orbital-station amendment (ground sites
+// delegate to frames verbatim, so every existing expectation is unchanged)
+require(path.join(APP, 'propagate.js'));
 require(path.join(APP, 'chart.js'));
 
 const C = SAT.chart, F = SAT.frames;

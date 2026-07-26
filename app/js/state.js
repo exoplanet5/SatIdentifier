@@ -125,6 +125,26 @@
     return state.locations.find(l => l.active) || state.locations[0] || null;
   };
 
+  /** THE one resolution point for site kind (CONTRACT "Orbital observing
+   *  stations"). Ground sites pass through with kind stamped; orbit sites come
+   *  back with the TLE resolved OUT OF THE LOADED CATALOGUE — never stored on the
+   *  site, so it can never silently go stale relative to the catalogue it
+   *  identifies against — or with missing:true, which callers must show rather
+   *  than guess around. */
+  state.resolvedSite = function (loc) {
+    const l = loc || state.activeLocation();
+    if (!l) return null;
+    if ((l.kind || 'ground') !== 'orbit') return Object.assign({ kind: 'ground' }, l);
+    const obj = l.norad != null ? state.objByNorad(l.norad) : null;
+    return Object.assign({}, l, {
+      kind: 'orbit',
+      l1: obj ? obj.l1 : null,
+      l2: obj ? obj.l2 : null,
+      objName: obj ? obj.name : null,
+      missing: !obj,
+    });
+  };
+
   state.getObj = function (id) {
     return state.catalog.objs.find(o => o.id === id) || null;
   };

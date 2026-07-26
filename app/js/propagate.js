@@ -78,24 +78,71 @@
     return { r: pv.position, v: pv.velocity };
   }
 
+  /** True for an orbit-kind site; a missing kind IS 'ground' (pre-v0.2 saves). */
+  function isOrbitSite(loc) {
+    return !!loc && (loc.kind || 'ground') === 'orbit';
+  }
+
+  /** Observer state {r, v} in TEME km, km/s for a site of EITHER kind — the
+   *  main-thread mirror of the scan worker's obsStateAt (CONTRACT "Orbital
+   *  observing stations"). An orbit site resolves its object out of the loaded
+   *  catalogue by NORAD at call time; null when the catalogue lacks it or SGP4
+   *  fails — callers show that, they do not guess. */
+  function obsState(loc, date, opts) {
+    if (isOrbitSite(loc)) {
+      const st = SAT.state;
+      const obj = (st && st.objByNorad && loc.norad != null)
+        ? st.objByNorad(loc.norad) : null;
+      if (!obj) return null;
+      return temeKm(obj, date);
+    }
+    const r = F.siteTemeKm(loc, date, opts && opts.dut1S);
+    return { r: r, v: { x: -OMEGA_E * r.y, y: OMEGA_E * r.x, z: 0 } };
+  }
+
+  /** Kind-dispatching converters — every UI module calls THESE instead of
+   *  SAT.frames.altAzToRaDec/raDecToAltAz directly (CONTRACT v0.2). Ground
+   *  delegates verbatim, refraction included, so behaviour is byte-identical to
+   *  v0.1. Orbit converts through the LVLH basis — az from along-track toward the
+   *  orbit normal, el from the local horizontal toward zenith — with refraction
+   *  never applied. Null when an orbit site cannot be resolved. */
+  function siteAltAzToRaDec(loc, azDeg, elDeg, date, opts) {
+    if (!isOrbitSite(loc)) return F.altAzToRaDec(azDeg, elDeg, loc, date, opts);
+    const os = obsState(loc, date);
+    if (!os) return null;
+    const basis = F.lvlhBasis(os.r, os.v);
+    if (!basis) return null;
+    const rd = F.vecToRaDec(F.temeToJ2000(F.lvlhToVec(azDeg, elDeg, basis), date));
+    return { raDeg: rd.raDeg, decDeg: rd.decDeg };
+  }
+
+  function siteRaDecToAltAz(loc, raDeg, decDeg, date, opts) {
+    if (!isOrbitSite(loc)) return F.raDecToAltAz(raDeg, decDeg, loc, date, opts);
+    const os = obsState(loc, date);
+    if (!os) return null;
+    const basis = F.lvlhBasis(os.r, os.v);
+    if (!basis) return null;
+    return F.vecToLvlh(F.j2000ToTeme(F.raDecToVec(raDeg, decDeg), date), basis);
+  }
+
   /** Full topocentric solution, J2000 for RA/Dec and apparent-sky rates.
    *
-   * Returns null when SGP4 fails. Does NOT filter on elevation — a negative
-   * elevation is a valid answer and callers decide what to do with it.
+   * Returns null when SGP4 fails (target OR an orbit site's observer). Does NOT
+   * filter on elevation — a negative elevation is a valid answer and callers
+   * decide what to do with it. On an orbit site azDeg/elDeg are LVLH angles and
+   * the mount rate is measured against the LVLH frame (CONTRACT v0.2).
    */
   function look(loc, obj, date, opts) {
     const pv = temeKm(obj, date);
     if (!pv) return null;
     const o = opts || {};
 
-    const siteTeme = F.siteTemeKm(loc, date, o.dut1S);
-    // The observer's own inertial velocity, omega_z x r. Required for d(RA,Dec)/dt
-    // to be right: the sky rate is measured between two inertially-moving points.
-    const siteVel = {
-      x: -OMEGA_E * siteTeme.y,
-      y: OMEGA_E * siteTeme.x,
-      z: 0,
-    };
+    const os = obsState(loc, date, o);
+    if (!os) return null;
+    const siteTeme = os.r;
+    // The observer's own inertial velocity. Required for d(RA,Dec)/dt to be
+    // right: the sky rate is measured between two inertially-moving points.
+    const siteVel = os.v;
 
     const rho = {
       x: pv.r.x - siteTeme.x, y: pv.r.y - siteTeme.y, z: pv.r.z - siteTeme.z,
@@ -147,10 +194,25 @@
     //           alt-az-fixed instrument sees. Here a geostationary satellite really
     //           is a stationary dot and the stars are what trail.
     //
-    // Subtracting omega x rho converts the inertial rate into the rotating frame.
+    // Subtracting omega x rho converts the inertial rate into the rotating frame:
+    // omega_E z for a ground horizon, Omega_LVLH = (r x v)/|r|^2 for an orbit site.
     const sky = skyRate(rhoDotJ);
-    const omegaCrossRho = F.temeToJ2000(
-      { x: -OMEGA_E * rho.y, y: OMEGA_E * rho.x, z: 0 }, date);
+    let frameOm;
+    if (isOrbitSite(loc)) {
+      const r2o = siteTeme.x * siteTeme.x + siteTeme.y * siteTeme.y + siteTeme.z * siteTeme.z;
+      frameOm = {
+        x: (siteTeme.y * siteVel.z - siteTeme.z * siteVel.y) / r2o,
+        y: (siteTeme.z * siteVel.x - siteTeme.x * siteVel.z) / r2o,
+        z: (siteTeme.x * siteVel.y - siteTeme.y * siteVel.x) / r2o,
+      };
+    } else {
+      frameOm = { x: 0, y: 0, z: OMEGA_E };
+    }
+    const omegaCrossRho = F.temeToJ2000({
+      x: frameOm.y * rho.z - frameOm.z * rho.y,
+      y: frameOm.z * rho.x - frameOm.x * rho.z,
+      z: frameOm.x * rho.y - frameOm.y * rho.x,
+    }, date);
     const mount = skyRate({
       x: rhoDotJ.x - omegaCrossRho.x,
       y: rhoDotJ.y - omegaCrossRho.y,
@@ -159,9 +221,16 @@
     const rateAsPerS = sky.rate, paDeg = sky.pa;
 
     // refract defaults ON: the app always applies refraction (round-2 review);
-    // pass {refraction:false} only for tests needing the geometric path
-    const aa = F.raDecToAltAz(rd.raDeg, rd.decDeg, loc, date,
-      { refract: o.refraction !== false, dut1S: o.dut1S });
+    // pass {refraction:false} only for tests needing the geometric path. An orbit
+    // site reads out LVLH angles instead — and never refraction (CONTRACT v0.2).
+    let aa;
+    if (isOrbitSite(loc)) {
+      const basis = F.lvlhBasis(siteTeme, siteVel);
+      aa = basis ? F.vecToLvlh(rho, basis) : { azDeg: 0, elDeg: 90 };
+    } else {
+      aa = F.raDecToAltAz(rd.raDeg, rd.decDeg, loc, date,
+        { refract: o.refraction !== false, dut1S: o.dut1S });
+    }
 
     // Photometry lives in SAT.photo; it loads after this module, so resolve it at
     // call time rather than at definition time.
@@ -249,6 +318,7 @@
   SAT.prop = {
     Re, Rp,
     ensureSatrec, meanMotion, tsinceMin, temeKm, look,
+    isOrbitSite, obsState, siteAltAzToRaDec, siteRaDecToAltAz,
     periodMinutes, revsPerDay, classOf, altitudes, tleEpoch, tleAgeDays,
   };
 })();

@@ -171,5 +171,59 @@ console.log('\n[3] absolute sanity');
   check('alt/az round trip: el', aa.elDeg, 47.6, 1e-6, 'deg');
 }
 
+// ---------------------------------------------------------------- test 4
+console.log('\n[4] LVLH frame (orbital observing stations)');
+{
+  // Equatorial prograde circular orbit: every axis is known by inspection.
+  // r = +x, v = +y  =>  R (zenith) = x, W (orbit normal, r x v) = z,
+  // S (along-track) = W x R = y.
+  const b = F.lvlhBasis({ x: 7000, y: 0, z: 0 }, { x: 0, y: 7.5, z: 0 });
+  check('R is radial (x)', b.R.x, 1, 1e-12, '');
+  check('W is the orbit normal (z)', b.W.z, 1, 1e-12, '');
+  check('S is along-track (y)', b.S.y, 1, 1e-12, '');
+
+  // The named pointings land on the named axes.
+  const along = F.lvlhToVec(0, 0, b);
+  const normal = F.lvlhToVec(90, 0, b);
+  const zenith = F.lvlhToVec(0, 90, b);
+  const nadir = F.lvlhToVec(123, -90, b);        // az must not matter at the pole
+  check('az 0 el 0 -> along-track', along.y, 1, 1e-12, '');
+  check('az 90 el 0 -> orbit normal', normal.z, 1, 1e-12, '');
+  check('el +90 -> zenith', zenith.x, 1, 1e-12, '');
+  check('el -90 -> nadir (any az)', nadir.x, -1, 1e-12, '');
+
+  // Orthonormality and az/el round trip on messy, inclined, eccentric PVs.
+  let worstOrtho = 0, worstRt = 0;
+  const pvs = [
+    [{ x: 4102, y: -4577, z: 2957 }, { x: 5.1, y: 2.2, z: -3.7 }],
+    [{ x: -26550, y: 33200, z: 40 }, { x: -2.4, y: -1.9, z: 0.1 }],
+    [{ x: 1200, y: 6900, z: -3300 }, { x: -7.2, y: 1.1, z: -0.4 }],
+  ];
+  for (const [r, v] of pvs) {
+    const bb = F.lvlhBasis(r, v);
+    const dots = [
+      bb.R.x * bb.S.x + bb.R.y * bb.S.y + bb.R.z * bb.S.z,
+      bb.R.x * bb.W.x + bb.R.y * bb.W.y + bb.R.z * bb.W.z,
+      bb.S.x * bb.W.x + bb.S.y * bb.W.y + bb.S.z * bb.W.z,
+      Math.hypot(bb.R.x, bb.R.y, bb.R.z) - 1,
+      Math.hypot(bb.S.x, bb.S.y, bb.S.z) - 1,
+      Math.hypot(bb.W.x, bb.W.y, bb.W.z) - 1,
+    ];
+    worstOrtho = Math.max(worstOrtho, ...dots.map(Math.abs));
+    for (const [az, el] of [[0, 0], [37.2, 12.8], [180, -45], [271.5, 88], [359.9, -88]]) {
+      const back = F.vecToLvlh(F.lvlhToVec(az, el, bb), bb);
+      let dAz = ((back.azDeg - az + 540) % 360) - 180;
+      dAz *= Math.cos(el * Math.PI / 180);
+      worstRt = Math.max(worstRt, Math.abs(dAz), Math.abs(back.elDeg - el));
+    }
+  }
+  check('basis orthonormality (worst dot / norm error)', worstOrtho, 0, 1e-12, '');
+  check('az/el round trip through the basis', worstRt, 0, 1e-9, 'deg');
+
+  // Degenerate PV refuses rather than poisons.
+  const bad = F.lvlhBasis({ x: 7000, y: 0, z: 0 }, { x: 7.5, y: 0, z: 0 });
+  check('r parallel to v yields null, not NaNs', bad === null ? 0 : 1, 0, 0, '');
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : '\nall checks passed\n');
 process.exit(failures ? 1 : 0);

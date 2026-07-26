@@ -522,6 +522,63 @@ beside the dev server, new table served from the bundle, clean quit);
 `release/SatIdentifier-macOS-arm64.zip` refreshed, and the CI-built
 `SatIdentifier-windows-x64.zip` pulled in from origin.
 
+### Round 8 (2026-07-26) — orbital observing stations (v0.2)
+
+The site can now be a satellite: space-based SSA, "who crosses *my sensor's*
+field". Contract-first as always — CONTRACT.md gained the binding section
+"Orbital observing stations (v0.2)" before any code moved.
+
+| # | Feedback | Change |
+|---|---|---|
+| 1 | Sites get two type selection | `kind: 'ground' \| 'orbit'` on locations (a missing kind IS ground — pre-v0.2 saves need no migration). Sites window grew a Ground/Orbit toggle on the add form; orbit rows show a NORAD box plus the LIVE catalogue resolution |
+| 2 | Input orbital station by NORAD ID from the catalogue | The site stores ONLY the NORAD; the TLE is resolved out of the loaded catalogue at use time (`state.resolvedSite`), so it can never go stale against the catalogue it identifies with. Picker searches by number or name, eight suggestions, no 32k-option datalist |
+
+Engine: the observer was already one provider away — `obsStateAt(t) → {r,v}`
+is now the ONE place kind matters (ground = GMST rotation + ω×r; orbit = one
+SGP4 call, throwing loudly rather than scanning from (0,0,0)). Physics gates:
+horizon → hard-Earth limb occlusion (inside `insideField`, so bisection
+resolves a target rising from behind the Earth); refraction never in orbit;
+mount rate against Ω_LVLH = (r×v)/|r|²; Az/El mean LVLH angles (az from
+along-track toward the orbit normal, el toward zenith); the observer excludes
+itself by NORAD on both cull paths. Stage 1 keeps both quadratic culls with
+observer samples every ~2° of arc (cap 600) and repays the capped remainder as
+a per-object chord/rPeri pad; the latitude cull is ground-only. Orbit scans
+clamp coarseStepS ≤ 10 s (chord-rescue curvature ~ Δt²), mirrored in the
+estimate.
+
+Proofs (`tools/test_scan.js` section [o], run on the live CelesTrak snapshot):
+cull on/off identity from an LVLH zenith stare (56 = 56, stage 1 still culls);
+independent recompute of every reported position through raw satellite.js
+agrees to 0.013″; the same GEO pointing flips 92 crossings → 0 while the Earth
+is in the way; the observer never identifies itself. LVLH basis: orthonormal
+to 1e-12, named axes land where inspection says (tools/test_frames.js [4]).
+
+Two pre-existing engine bugs surfaced by running the identity proof on a
+STALE catalogue (both also failed on the unmodified baseline — bisected by
+stashing the worker):
+
+- **Stage 1 plane tolerance ignored TLE age.** `nodeo` is Ω at *epoch*; the
+  tolerance only charged nodal regression across the scan span, so a 5-day-old
+  LEO element set (node already ~25° away) could lose a boundary object. Now
+  charges `spanDays + ageDays` per object.
+- **tCa rounding skew.** RA/Dec was solved at the unrounded tCa but reported
+  with integer-ms `tCaMs` — up to ~2″ of self-disagreement on a fast pass.
+  Round first, then solve: independent recompute went 1.78″ → 0.078″.
+
+Also: the GEO "mount rate ~0" check now selects i ≤ 0.5° birds — an old GEO
+drifted to i = 13° genuinely moves at ~3.4″/s against the horizon (physics,
+not regression; 52 uninclined birds still verify < 0.24″/s). Live check from
+ISS (ZARYA) over the real 32k catalogue: 61 steps @ 10 s, stage 1 culled 54%,
+4.6 s wall, 10 crossings at the zenith — closest a FENGYUN 1C fragment at
+455 km crossing at 1.8°/s. All-Sky (a horizon projection) now says so on an
+orbit site instead of rendering nonsense.
+
+Build trap for future rounds: PyInstaller's `--clean` did NOT invalidate a
+`build/` tree left by an earlier round — the first rebuild froze the OLD
+`server.py` (bundle pinged `0.1.0` after the bump). `rm -rf build dist` before
+a release build; verify with `/api/ping` on the bundled instance, which is the
+check that caught it.
+
 ## 13. Running the checks
 
 ```sh

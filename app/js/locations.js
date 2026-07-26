@@ -58,6 +58,43 @@
         col.addEventListener('input', () => { loc.color = col.value; commit(false); });
         const nameIn = U.el('input', { class: 'input', value: loc.name, style: W_NAME });
         nameIn.addEventListener('change', () => { loc.name = nameIn.value.trim() || loc.name; commit(false); });
+        const del = U.el('span', {
+          class: 'icon-btn', title: 'remove',
+          onclick: () => {
+            SAT.state.locations = SAT.state.locations.filter(l => l !== loc);
+            commit(); render();
+          },
+        }, '✕');
+
+        // Orbit site row: the three coordinate cells become one NORAD cell plus
+        // the LIVE resolution against the loaded catalogue — the site stores only
+        // the NORAD, never TLE lines (CONTRACT "Orbital observing stations").
+        if ((loc.kind || 'ground') === 'orbit') {
+          const nIn = U.el('input', { class: 'input', value: loc.norad != null ? loc.norad : '', style: 'width:calc(6ch + 18px)', title: 'NORAD catalogue number of the observing satellite' });
+          nIn.addEventListener('change', () => {
+            const v = parseInt(nIn.value, 10);
+            if (isFinite(v) && v > 0) { loc.norad = v; commit(); render(); }
+            else rejectEdit(nIn, 'NORAD must be a positive integer');
+            nIn.value = loc.norad != null ? loc.norad : '';
+          });
+          const obj = loc.norad != null ? SAT.state.objByNorad(loc.norad) : null;
+          const res = U.el('span', {
+            class: 'dim',
+            style: 'font-size:11px;' + (obj ? '' : 'color:var(--danger)'),
+          }, obj ? (obj.name + (obj.intl ? ' · ' + obj.intl : ''))
+                 : 'not in catalogue — load one that contains it');
+          const cell = U.el('td', null, [
+            U.el('span', { class: 'dim', style: 'font-size:11px;margin-right:4px' }, 'NORAD'),
+            nIn, U.el('span', null, ' '), res,
+          ]);
+          cell.colSpan = 3;
+          tb.appendChild(U.el('tr', null, [
+            U.el('td', null, act), U.el('td', null, col),
+            U.el('td', null, nameIn), cell, U.el('td', null, del),
+          ]));
+          return;
+        }
+
         const latIn = U.el('input', { class: 'input', value: loc.latDeg.toFixed(4), style: W_LAT });
         latIn.addEventListener('change', () => {
           const v = parseFloat(latIn.value);
@@ -79,13 +116,6 @@
           else rejectEdit(altIn, 'altitude must be a number (meters)');
           altIn.value = loc.altM;
         });
-        const del = U.el('span', {
-          class: 'icon-btn', title: 'remove',
-          onclick: () => {
-            SAT.state.locations = SAT.state.locations.filter(l => l !== loc);
-            commit(); render();
-          },
-        }, '✕');
         tb.appendChild(U.el('tr', null, [
           U.el('td', null, act), U.el('td', null, col),
           U.el('td', null, nameIn), U.el('td', null, latIn), U.el('td', null, lonIn),
@@ -100,16 +130,110 @@
       }
     }
 
-    // add form
+    // add form — two kinds (CONTRACT "Orbital observing stations"): a ground site
+    // takes coordinates, an orbit site takes a NORAD picked out of the loaded
+    // catalogue. One row, with the kind toggle swapping which inputs show.
+    let addKind = 'ground';
     const aName = U.el('input', { class: 'input', placeholder: 'name', style: W_NAME });
     const aLat = U.el('input', { class: 'input', placeholder: 'lat °N', style: W_LAT });
     const aLon = U.el('input', { class: 'input', placeholder: 'lon °E', style: W_LON });
     const aAlt = U.el('input', { class: 'input', placeholder: 'alt m', style: W_ALT, value: '0' });
     const aErr = U.el('span', { class: 'err' }, '');
+
+    // NORAD picker: type a number or a name fragment, pick from the catalogue.
+    // The datalist alternative chokes on 32 k options; eight suggestions suffice.
+    let picked = null;   // the catalogue object chosen from the suggestions
+    const aNorad = U.el('input', {
+      class: 'input', placeholder: 'NORAD or name — type to search',
+      style: 'width:210px',
+    });
+    const sug = U.el('div', {
+      style: 'position:absolute;left:0;top:100%;z-index:40;display:none;' +
+        'background:var(--panel,#141a21);border:1px solid var(--border);' +
+        'border-radius:4px;min-width:260px;max-height:170px;overflow-y:auto;' +
+        'box-shadow:0 4px 14px rgba(0,0,0,.5)',
+    });
+    const noradWrap = U.el('span', { style: 'position:relative;display:none' }, [aNorad, sug]);
+
+    function hideSug() { sug.style.display = 'none'; sug.innerHTML = ''; }
+    function showSug(list, note) {
+      sug.innerHTML = '';
+      if (note) {
+        sug.appendChild(U.el('div', { class: 'dim', style: 'padding:4px 8px;font-size:11px' }, note));
+      }
+      list.forEach(o => {
+        const it = U.el('div', {
+          style: 'padding:3px 8px;font-size:11px;cursor:pointer;white-space:nowrap',
+          onmousedown: (ev) => {           // mousedown: fires before the input's blur
+            ev.preventDefault();
+            picked = o;
+            aNorad.value = String(o.norad);
+            if (!aName.value.trim()) aName.placeholder = o.name;
+            hideSug();
+          },
+        }, o.norad + ' · ' + o.name + (o.intl ? ' · ' + o.intl : ''));
+        it.addEventListener('mouseenter', () => { it.style.background = 'rgba(79,195,247,.15)'; });
+        it.addEventListener('mouseleave', () => { it.style.background = ''; });
+        sug.appendChild(it);
+      });
+      sug.style.display = 'block';
+    }
+    aNorad.addEventListener('input', () => {
+      picked = null;
+      const q = aNorad.value.trim();
+      if (q.length < 1) { hideSug(); return; }
+      const objs = (SAT.state.catalog && SAT.state.catalog.objs) || [];
+      if (!objs.length) { showSug([], 'no catalogue loaded — Catalogue window first'); return; }
+      const qU = q.toUpperCase();
+      const out = [];
+      for (let i = 0; i < objs.length && out.length < 8; i++) {
+        const o = objs[i];
+        if (String(o.norad).indexOf(q) === 0 ||
+            (o.name && o.name.toUpperCase().indexOf(qU) >= 0)) out.push(o);
+      }
+      showSug(out, out.length ? null : 'no match in the loaded catalogue');
+    });
+    aNorad.addEventListener('blur', () => { setTimeout(hideSug, 150); });
+
+    const kindBtns = [['ground', 'Ground'], ['orbit', 'Orbit']].map(([k, label]) => {
+      const b = U.el('button', {
+        class: 'btn small' + (k === addKind ? ' on' : ''),
+        title: k === 'ground' ? 'a fixed site: latitude / longitude / altitude'
+          : 'an orbital station: observe FROM a satellite in the loaded catalogue',
+        onclick: () => {
+          addKind = k;
+          kindBtns.forEach(x => x.btn.classList.toggle('on', x.kind === k));
+          const g = k === 'ground';
+          aLat.style.display = aLon.style.display = aAlt.style.display = g ? '' : 'none';
+          noradWrap.style.display = g ? 'none' : 'inline-block';
+          aErr.textContent = '';
+        },
+      }, label);
+      return { kind: k, btn: b };
+    });
+
     const addBtn = U.el('button', {
       class: 'btn primary small', onclick: () => {
-        const lat = parseFloat(aLat.value), lon = parseFloat(aLon.value), alt = parseFloat(aAlt.value) || 0;
         aErr.textContent = '';
+        if (addKind === 'orbit') {
+          const norad = picked ? picked.norad : parseInt(aNorad.value.trim(), 10);
+          if (!isFinite(norad) || norad <= 0) {
+            aErr.textContent = 'type a NORAD number or pick an object from the search';
+            return;
+          }
+          const obj = picked || SAT.state.objByNorad(norad);
+          if (!obj) { aErr.textContent = 'NORAD ' + norad + ' is not in the loaded catalogue'; return; }
+          SAT.state.locations.push({
+            id: U.uuid('loc'), kind: 'orbit',
+            name: aName.value.trim() || obj.name || ('NORAD ' + norad),
+            norad: norad, latDeg: 0, lonDeg: 0, altM: 0,
+            active: SAT.state.locations.length === 0, color: '#7e57c2',
+          });
+          aName.value = aNorad.value = ''; picked = null; aName.placeholder = 'name';
+          commit(); render();
+          return;
+        }
+        const lat = parseFloat(aLat.value), lon = parseFloat(aLon.value), alt = parseFloat(aAlt.value) || 0;
         if (!isFinite(lat) || Math.abs(lat) > 90) { aErr.textContent = 'lat must be −90…90'; return; }
         if (!isFinite(lon) || Math.abs(lon) > 180) { aErr.textContent = 'lon must be −180…180'; return; }
         SAT.state.locations.push({
@@ -125,15 +249,21 @@
     body.appendChild(U.el('div', null, [
       host,
       U.el('div', { class: 'pane', style: 'border-top:1px solid var(--border)' }, [
-        U.el('div', { class: 'row' }, [aName, aLat, aLon, aAlt, addBtn, aErr]),
+        U.el('div', { class: 'row' },
+          kindBtns.map(k => k.btn).concat([aName, aLat, aLon, aAlt, noradWrap, addBtn, aErr])),
         U.el('div', { class: 'dim', style: 'font-size:11px;margin-top:4px' },
           'The active site is where the scan is run from: it sets the topocentric ' +
-          'geometry for every crossing, so changing it invalidates the current result.'),
+          'geometry for every crossing, so changing it invalidates the current result. ' +
+          'An Orbit site observes from a catalogue satellite (space-based SSA): its TLE ' +
+          'is taken live from the loaded catalogue by NORAD number.'),
       ]),
     ]));
 
     SAT.bus.on('state-loaded', render);
     SAT.bus.on('locations-changed', () => { /* re-render only on structural change done locally */ });
+    // orbit rows resolve their NORAD against the catalogue LIVE, so a catalogue
+    // load must repaint "not in catalogue" into the object's name
+    SAT.bus.on('catalog-changed', render);
     render();
   }
 

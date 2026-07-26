@@ -85,6 +85,11 @@ global.satellite = require(path.join(APP, 'vendor', 'satellite.min.js'));
 global.SAT = { ui: {} };
 require(path.join(APP, 'util.js'));
 require(path.join(APP, 'frames.js'));
+// real propagate.js: pointing.js converts through SAT.prop's kind-dispatching
+// siteAltAzToRaDec/siteRaDecToAltAz since the orbital-station amendment, and for
+// a ground site those ARE frames.altAzToRaDec/raDecToAltAz — so test 1's exact
+// round-trip property is unchanged and now exercised through the shipping path.
+require(path.join(APP, 'propagate.js'));
 const U = SAT.util;
 const F = SAT.frames;
 

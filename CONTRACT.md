@@ -295,7 +295,16 @@ SAT.state.catalog = {       // the object set the scan runs against — a MERGED
 // from /api/cache/<cacheKey> via catalogRefs. Pasted TLEs have no server cache,
 // so they persist inline as `pasted` (capped 2000 — paste means a handful).
 
-SAT.state.locations = [{ id, name, latDeg, lonDeg, altM, active: false, color }]
+SAT.state.locations = [{ id, name, kind, latDeg, lonDeg, altM, norad, active: false, color }]
+// kind: 'ground' (default — a missing kind IS 'ground', so pre-v0.2 saves need no
+// migration) | 'orbit'. An orbit site observes from a catalogue object: `norad`
+// names it, and the TLE is RESOLVED FROM THE LOADED CATALOGUE at use time — the
+// site never stores element lines of its own, so it can never silently go stale
+// relative to the catalogue it identifies against. latDeg/lonDeg/altM stay 0 on
+// orbit sites (numeric, so a missed ground-only code path degrades, not throws).
+// state.resolvedSite(loc?) is the ONE resolution point: ground sites pass through;
+// orbit sites come back with {l1, l2, objName} attached, or {missing:true} when the
+// catalogue lacks the NORAD — callers show that, they do not guess.
 
 SAT.state.settings = {
   chart:  { stars:true, starNames:false, constLines:true, constNames:false,
@@ -529,9 +538,132 @@ in behaviour to `frames.js` — `frames.js` is the reference implementation).
 
 - main → worker `{cmd:'load', objs:[{id,norad,name,intl,l1,l2,rcs,stdMag}]}`
 - main → worker `{cmd:'scan', params:{t0Ms, spanMin, site, pointing, fov, filters, steps}}`
+  — `site` is either `{kind:'ground', latDeg, lonDeg, altM}` or
+  `{kind:'orbit', norad, l1, l2, name}`: scan.js resolves the TLE from the catalogue
+  *before* posting, because the worker owns satrecs for its shard only and the
+  observer must exist in every worker.
 - worker → main `{type:'progress', done, total}`
 - worker → main `{type:'result', crossings:[...], culled:{stage1, stage2}}`
 - main → worker `{cmd:'cancel'}`
+
+## Orbital observing stations (v0.2) — the moving-observer amendment
+
+A site may be a satellite (`kind:'orbit'`, space-based SSA: who crosses *my sensor's*
+field). The scan pipeline was built so that the observer enters the geometry at
+exactly one point — the TEME position/velocity provider — and this amendment keeps it
+that way. **Nothing downstream of the provider may ever ask what kind of observer it
+serves**, with the short list of physics gates below as the only exceptions.
+
+### The observer provider
+
+`obsStateAt(t) → {r, v}` in TEME km, km/s — the ONE place observer kind matters:
+
+- ground: `r = R3(−gmst)·ecef`, `v = ω⊕ ẑ × r` (what siteTemeAt + the inline
+  velocity always were; now they also hand back `v` so no caller reconstructs it);
+- orbit: one `sgp4(obsRec, tsince)` — the observer's satrec is built once in
+  `prepare()` from the TLE resolved out of the catalogue. One extra propagation per
+  epoch against 32 k targets: unmeasurable. An invalid observer TLE fails the scan
+  loudly at prepare time; it must never fail open into "scanned from (0,0,0)".
+
+Main-thread mirror: `SAT.prop.obsState(loc, date)`, plus the dispatching converters
+`SAT.prop.siteAltAzToRaDec / siteRaDecToAltAz` which every UI module now calls
+instead of `SAT.frames.altAzToRaDec / raDecToAltAz` directly. For ground sites they
+delegate verbatim (refraction included) — behaviour is byte-identical to v0.1.
+
+### The LVLH frame — what "Az/El" means on an orbit site
+
+Basis from the observer PV: `R̂ = r̂` (zenith, radially out), `Ŵ = (r×v)/|r×v|`
+(orbit normal), `Ŝ = Ŵ×R̂` (along-track). Pointing angles:
+
+```
+boresight = cos(el)·(cos(az)·Ŝ + sin(az)·Ŵ) + sin(el)·R̂
+```
+
+so El is measured from the local-horizontal plane toward zenith (nadir = −90°), and
+Az from the along-track direction toward the orbit normal — the same rotational
+sense as ground azimuth N→E, with "north" played by the velocity direction. The
+existing Az/El inputs, `track:'mount'`, and the parked-mount drift machinery all
+carry over with this reading: a `track:'mount'` field on an orbit site is fixed in
+LVLH (a body-mounted staring sensor) and its chart frame drifts at the orbital rate
+through the stars, exactly as a parked ground mount drifts at the sidereal rate.
+**No refraction, ever, on an orbit site** — the always-on refraction rule is a
+ground-site rule; the converters gate it on kind, not the callers.
+
+### Physics gates (the exhaustive list — do not add one without amending this)
+
+1. **Horizon → Earth limb.** The ground gate `dot(topo, site) > 0` and `minElDeg`
+   are meaningless in orbit (you can look down at a target against the Earth). An
+   orbit site instead drops a sample iff the observer→target segment intersects the
+   hard Earth sphere: with `t* = −s·ρ̂`, occluded when `0 < t* < ρ` and
+   `|s + t*ρ̂| < Re`. Hard `Re`, no atmosphere pad — inclusion-conservative: a
+   limb-grazing LOS is kept and the observer merely sees it against bright air.
+   The limb test is part of `insideField`, so entry/exit bisection resolves a target
+   *rising from behind the Earth* the same way it resolves a field edge.
+2. **Sky/mount rates.** The sky rate is inertial and unchanged. The mount rate
+   subtracts the observer frame's rotation: `ω⊕ ẑ × ρ` on the ground,
+   `Ω_LVLH × ρ` with `Ω_LVLH = (r×v)/|r|²` in orbit.
+3. **sunElDeg** keeps its formula (Sun's angle above the observer's local
+   horizontal) — on an orbit site it reads as the observer's day/night state, which
+   is what the twilight readout was for anyway.
+4. **azDeg/elDeg on a Crossing** are LVLH angles on an orbit site (limb clearance is
+   `elDeg` + 90° from nadir if anyone asks). Columns keep their headers.
+5. **Self-exclusion.** The observer is removed from its own target list by NORAD at
+   stage-2 shard setup: identifying yourself is never the answer.
+
+### Stage 1 under a moving observer
+
+The two quadratic culls (declination, orbit-plane) are already parameterized by
+sampled observer positions and survive untouched *in form*. What breaks is the
+sampling contract: 15-minute cadence assumed a site that moves 3.75°/15 min, and the
+tests OR over samples, so sparse sampling on a LEO observer (56°/15 min) would cull
+real objects — the one failure a cull must never have. On an orbit site:
+
+- the *latitude/horizon-reachability* cull is **skipped** (fail open; the plane test
+  was always the strong one);
+- sightline range bounds widen to `ρ ∈ [max(1, rPeri_t − rObsMax), rApo_t + rObsMax]`
+  with `rObsMin/Max` from the observer's own `orbitRadii`;
+- observer samples come from `obsStateAt` at a cadence targeting ~2° of observer
+  arc, capped at 600 samples; whatever arc the cap leaves unresolved is repaid as a
+  *pad*: the between-sample chord `δ = 2·rObsMax·sin(Δθ/2)` is charged per object as
+  `δ / max(rPeri_target, Re)` radians added to the declination limit and the plane
+  tolerance. Provably conservative: a true observer position is within δ km of some
+  sample, so the true candidate point `p` moves by ≤ δ and `|p| ≥ rPeri_target`.
+- The soundness proof is the same one v0.1 shipped with: `useStage1:false` must
+  return the identical crossing set, now exercised over orbital geometries too
+  (tools/test_scan.js).
+
+### Stage 2/3 under a moving observer
+
+Adaptive margin `ω·Δt` with `ω = |v_target − v_obs|/ρ` was already
+observer-general. Close conjunctions self-protect: `ω·Δt ≥ π` forces the step to
+hit, so a target passing within `v_rel·Δt/π` (~100 km at 30 s steps) can never slip
+between samples. The great-circle chord rescue keeps its justification — over one
+coarse step the *relative* motion is near-rectilinear, and a straight relative
+track sweeps a great circle for any observer. The residual is relative-acceleration
+curvature, so **orbit sites clamp `coarseStepS` to ≤ 10 s** (curvature scales with
+Δt², so 30 s → 10 s buys 9×) — the estimate/refusal maths must use the clamped
+value, not the setting. TLE slop doubles up: `(slopKm_target + slopKm_obs)/ρ`,
+because the observer's ephemeris error is indistinguishable from the target's at
+the sensor.
+
+### Documented omissions (measured against the TLE-slop floor, ~arcmin at best)
+
+Light time (≤ ~5″ at 1 000 km for LEO-on-LEO) and the observer's orbital aberration
+(v/c ≈ 25 µrad ≈ 5″) are ignored, as annual aberration already is for ground sites.
+Both are two orders under the slop the UI already discloses. Do not "fix" one
+without the other and without a use case that resolves 5″.
+
+### UI consequences
+
+- Sites window: Ground | Orbit toggle on the add form; orbit rows show a NORAD box
+  plus the live-resolved catalogue name (or a red "not in catalogue" — the site
+  stays, the *scan* is what refuses, with the same message).
+- Pointing: the site line reads `NORAD n · name`; Az/El row labels grow an L
+  subscript on orbit sites; the track toggle relabels Mount → LVLH. Same fields,
+  same persistence, no second pointing model.
+- All-Sky is a ground-horizon projection and says so on an orbit site instead of
+  rendering nonsense. The chart, crossings table, sat-info and exports work
+  unchanged through the converters.
 
 ## SAT.photo (photometry.js) — AGENT P
 

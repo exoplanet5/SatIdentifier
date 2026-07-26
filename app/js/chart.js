@@ -181,7 +181,8 @@
       var loc = SAT.state.activeLocation();
       if (!loc) return null;
       try {
-        return SAT.frames.altAzToRaDec(o.azDeg, o.elDeg, loc, date,
+        // kind-dispatching: LVLH on an orbit site, refracted alt/az on the ground
+        return SAT.prop.siteAltAzToRaDec(loc, o.azDeg, o.elDeg, date,
           { refract: true, dut1S: o.dut1S });
       } catch (e) { return null; }
     }
@@ -249,7 +250,8 @@
    *  parallactic angle, so it inherits whatever refraction setting the pointing uses
    *  instead of quietly disagreeing with it. */
   function verticalPA(azDeg, elDeg, loc, date, opts, tp) {
-    var up = SAT.frames.altAzToRaDec(azDeg, Math.min(89.99, elDeg + 0.01), loc, date, opts);
+    var up = SAT.prop.siteAltAzToRaDec(loc, azDeg, Math.min(89.99, elDeg + 0.01), date, opts);
+    if (!up) throw new Error('unresolvable site');   // caught by buildFrames -> fixed frame
     return SAT.frames.posAngle(tp.raDeg, tp.decDeg, up.raDeg, up.decDeg);
   }
 
@@ -276,7 +278,8 @@
     try {
       azEl = o.mode === 'altaz'
         ? { azDeg: o.azDeg, elDeg: o.elDeg }
-        : SAT.frames.raDecToAltAz(base.raDeg, base.decDeg, loc, now, opts);
+        : SAT.prop.siteRaDecToAltAz(loc, base.raDeg, base.decDeg, now, opts);
+      if (!azEl) throw new Error('unresolvable site');   // -> fixed frame below
       // reference orientation: whatever the parked mount's +Y reads as right now
       var pa0 = verticalPA(azEl.azDeg, azEl.elDeg, loc, now, opts, base);
       var n = SAT.util.clamp(Math.ceil((t1Ms - t0Ms) / 15000) + 1, 2, 128);
@@ -284,7 +287,8 @@
       var f = [];
       for (var i = 0; i < n; i++) {
         var d = new Date(t0Ms + dt * i);
-        var tp = SAT.frames.altAzToRaDec(azEl.azDeg, azEl.elDeg, loc, d, opts);
+        var tp = SAT.prop.siteAltAzToRaDec(loc, azEl.azDeg, azEl.elDeg, d, opts);
+        if (!tp) throw new Error('unresolvable site');
         var pa = verticalPA(azEl.azDeg, azEl.elDeg, loc, d, opts, tp);
         f.push({ raDeg: tp.raDeg, decDeg: tp.decDeg, rotDeg: o.rotDeg + (pa - pa0) });
       }
@@ -1039,10 +1043,10 @@
       var loc = SAT.state.activeLocation();
       if (loc) {
         try {
-          var aa = SAT.frames.raDecToAltAz(rd.raDeg, rd.decDeg, loc,
+          var aa = SAT.prop.siteRaDecToAltAz(loc, rd.raDeg, rd.decDeg,
             SAT.clock ? SAT.clock.getDate() : new Date(),
             { refract: true, dut1S: SAT.state.obs.dut1S });
-          patch.azDeg = aa.azDeg; patch.elDeg = aa.elDeg;
+          if (aa) { patch.azDeg = aa.azDeg; patch.elDeg = aa.elDeg; }
         } catch (e) { /* leave az/el alone rather than write nonsense */ }
       }
     }
@@ -1123,10 +1127,14 @@
       var loc = SAT.state.activeLocation();
       if (loc) {
         try {
-          var aa = SAT.frames.raDecToAltAz(rd.raDeg, rd.decDeg, loc,
+          var aa = SAT.prop.siteRaDecToAltAz(loc, rd.raDeg, rd.decDeg,
             SAT.clock ? SAT.clock.getDate() : new Date(),
             { refract: true, dut1S: SAT.state.obs.dut1S });
-          txt += '  ·  Az ' + aa.azDeg.toFixed(2) + '°  El ' + aa.elDeg.toFixed(2) + '°';
+          var orb = SAT.prop.isOrbitSite(loc);
+          if (aa) {
+            txt += '  ·  ' + (orb ? 'AzL ' : 'Az ') + aa.azDeg.toFixed(2) +
+              '°  ' + (orb ? 'ElL ' : 'El ') + aa.elDeg.toFixed(2) + '°';
+          }
         } catch (err) { /* readout degrades to RA/Dec only */ }
       }
       elCursor.textContent = txt;

@@ -300,11 +300,28 @@ async function scan(p, label) {
     `(${geos.length})`);
   if (geos.length) {
     const worstSkyErr = Math.max(...geos.map((c) => Math.abs(c.rateAsPerS - 15.0)));
-    const worstMount = Math.max(...geos.map((c) => c.rateMountAsPerS));
     ok('GEO sky rate is ~15 arcsec/s (sidereal drift through the star field)',
       worstSkyErr < 3.0, `worst departure from 15"/s is ${worstSkyErr.toFixed(2)}"/s`);
-    ok('GEO mount rate is ~0 arcsec/s (stationary against the horizon)',
-      worstMount < 3.0, `worst ${worstMount.toFixed(3)}"/s`);
+    // "stationary against the horizon" is only true of an UNINCLINED bird: an
+    // old GEO drifted to inclination i traces a daily figure-8 and moves at up
+    // to ~omega_E*sin(i) against the horizon (i = 13 deg -> 3.4"/s, observed in
+    // the wild 2026-07-25). Restrict the ~0 claim to i <= 0.5 deg, where the
+    // physics actually promises < ~0.3"/s: this is what discriminates a
+    // backwards (or omitted) omega x rho term, which reads ~30"/s.
+    const incOf = new Map(objs.map((o) => {
+      let inc = NaN;
+      try { inc = parseFloat(o.l2.slice(8, 16)); } catch (e) { /* leave NaN */ }
+      return [o.norad, inc];
+    }));
+    const flatGeos = geos.filter((c) => (incOf.get(c.norad) || 99) <= 0.5);
+    if (flatGeos.length) {
+      const worstMount = Math.max(...flatGeos.map((c) => c.rateMountAsPerS));
+      ok('uninclined GEO mount rate is ~0 arcsec/s (stationary against the horizon)',
+        worstMount < 1.0,
+        `worst ${worstMount.toFixed(3)}"/s over ${flatGeos.length} birds with i <= 0.5 deg`);
+    } else {
+      console.log('  (no i <= 0.5 deg GEO in this field — mount-rate ~0 check skipped)');
+    }
   }
 
   const leos = G.crossings.filter((c) => c.cls === 'leo');
@@ -315,6 +332,152 @@ async function scan(p, label) {
     const worstDiff = Math.max(...leos.map((c) => Math.abs(c.rateAsPerS - c.rateMountAsPerS)));
     ok('LEO sky and mount rates differ by no more than Earth rotation (~15"/s)',
       worstDiff <= 15.1, `worst difference ${worstDiff.toFixed(3)}"/s`);
+  }
+
+  // ------------------------------------------------------------------ test o
+  // ORBITAL OBSERVING STATION (CONTRACT "Orbital observing stations"): the site
+  // is a satellite from the catalogue itself. The proofs are the same shape the
+  // ground pipeline shipped with — cull on/off identity, independent recompute —
+  // plus the physics the amendment added: limb occlusion and self-exclusion.
+  console.log('\n[o] orbital observing station');
+  const issObj = objs.find((o) => o.norad === 25544) ||
+    objs.find((o) => /^ISS \(ZARYA\)/.test(o.name));
+  ok('catalogue contains an ISS to observe from (test scaffold)', !!issObj,
+    issObj ? issObj.name : 'NOT FOUND');
+  if (issObj) {
+    const issRec = satellite.twoline2satrec(issObj.l1, issObj.l2);
+    const OSITE = { kind: 'orbit', norad: issObj.norad, l1: issObj.l1, l2: issObj.l2,
+      name: issObj.name };
+    const RE = 6378.137;
+
+    // observer/target geometry from first principles, sharing only satellite.js
+    const stateOf = (rec, d) => {
+      const pv = satellite.propagate(rec, d);
+      return pv && pv.position ? pv : null;
+    };
+    const occludedLos = (s, r) => {
+      const dx = r.x - s.x, dy = r.y - s.y, dz = r.z - s.z;
+      const rho = Math.hypot(dx, dy, dz);
+      const tStar = -(s.x * dx + s.y * dy + s.z * dz) / rho;
+      if (!(tStar > 0 && tStar < rho)) return false;
+      const s2 = s.x * s.x + s.y * s.y + s.z * s.z;
+      return s2 - tStar * tStar < RE * RE;
+    };
+
+    // o1 — a GEO target seen from LEO: find a visible window and an occluded one.
+    // GEO-from-ISS hides behind the Earth for a ~half-hour stretch once per orbit,
+    // so both windows exist within any couple of hours.
+    const geoObj = objs.find((o) => {
+      const r = satellite.twoline2satrec(o.l1, o.l2);
+      if (!r) return false;
+      const rpd = (r.no_kozai != null ? r.no_kozai : r.no) * 1440 / (2 * Math.PI);
+      return rpd >= 0.99 && rpd <= 1.01 && r.ecco < 0.01 && r.inclo < 3 * Math.PI / 180;
+    });
+    ok('catalogue contains a clean GEO target (test scaffold)', !!geoObj,
+      geoObj ? geoObj.name : 'NOT FOUND');
+    if (geoObj) {
+      const geoRec = satellite.twoline2satrec(geoObj.l1, geoObj.l2);
+      let tVis = null, tOcc = null;
+      for (let m = 0; m <= 180 && !(tVis && tOcc); m += 2) {
+        const d = new Date(T0.getTime() + m * 60000);
+        // the whole 2-min scan window must sit inside the state, not just its start
+        const states = [0, 60000, 120000].map((off) => {
+          const dd = new Date(d.getTime() + off);
+          const s = stateOf(issRec, dd), g = stateOf(geoRec, dd);
+          return s && g ? occludedLos(s.position, g.position) : null;
+        });
+        if (states.some((x) => x == null)) continue;
+        if (!tVis && states.every((x) => x === false)) tVis = d;
+        if (!tOcc && states.every((x) => x === true)) tOcc = d;
+      }
+      ok('found both a visible and an occluded window (test scaffold)', !!(tVis && tOcc),
+        `visible ${tVis && tVis.toISOString()}, occluded ${tOcc && tOcc.toISOString()}`);
+
+      if (tVis && tOcc) {
+        // aim at the target's topocentric direction at the window's midpoint;
+        // GEO-from-LEO parallax drifts the LOS ~44"/s, well inside a 3 deg field
+        // over 2 min
+        const aimAt = (d) => {
+          const s = stateOf(issRec, d), g = stateOf(geoRec, d);
+          const topo = { x: g.position.x - s.position.x, y: g.position.y - s.position.y,
+            z: g.position.z - s.position.z };
+          const rd = F.vecToRaDec(F.temeToJ2000(topo, d));
+          return { raDeg: rd.raDeg, decDeg: rd.decDeg };
+        };
+        const mkP = (t, aim) => params({
+          t0Ms: t.getTime(), spanMin: 2, site: OSITE,
+          pointing: { track: 'sky', mode: 'radec', raDeg: aim.raDeg, decDeg: aim.decDeg,
+            refract: false },
+          fov: { shape: 'circ', rDeg: 3, wDeg: 0, hDeg: 0, rotDeg: 0 },
+        });
+        const mid = (t) => new Date(t.getTime() + 60000);
+
+        const V = await scan(mkP(tVis, aimAt(mid(tVis))), 'orbital: GEO visible');
+        ok('the visible GEO is found from the orbital station',
+          V.crossings.some((c) => c.norad === geoObj.norad),
+          `${V.crossings.length} crossings in the field`);
+
+        const O = await scan(mkP(tOcc, aimAt(mid(tOcc))), 'orbital: GEO occluded');
+        ok('the SAME pointing finds nothing while the Earth is in the way (limb test)',
+          !O.crossings.some((c) => c.norad === geoObj.norad),
+          `${O.crossings.length} crossings in the field`);
+
+        // o2 — independent recompute of every reported position, orbital site:
+        // raw SGP4 for BOTH bodies -> TEME difference -> J2000 via frames.js.
+        if (V.crossings.length) {
+          let worstAs = 0;
+          let n = 0;
+          for (const cr of V.crossings) {
+            const o = objs.find((x) => x.id === cr.satId);
+            const rec2 = satellite.twoline2satrec(o.l1, o.l2);
+            const d = new Date(cr.tCaMs);
+            const s = stateOf(issRec, d), g = stateOf(rec2, d);
+            if (!s || !g) continue;
+            const topo = { x: g.position.x - s.position.x, y: g.position.y - s.position.y,
+              z: g.position.z - s.position.z };
+            const rd = F.vecToRaDec(F.temeToJ2000(topo, d));
+            worstAs = Math.max(worstAs, F.sep(rd.raDeg, rd.decDeg, cr.raDeg, cr.decDeg) * 3600);
+            n++;
+          }
+          ok('orbital RA/Dec matches an independent recompute to < 1 arcsec',
+            worstAs < 1.0, `worst ${worstAs.toFixed(4)} arcsec over ${n}`);
+        }
+      }
+    }
+
+    // o3 — cull on/off identity, the same soundness proof the ground cull ships
+    // with, over an orbital geometry: LVLH zenith stare (track 'mount'), 20 min.
+    const pZen = params({
+      t0Ms: T0.getTime(), spanMin: 20, site: OSITE,
+      pointing: { track: 'mount', mode: 'altaz', azDeg: 0, elDeg: 90, refract: false },
+      fov: { shape: 'circ', rDeg: 15, wDeg: 0, hDeg: 0, rotDeg: 0 },
+    });
+    const Z1 = await scan(pZen, 'orbital zenith, cull ON');
+    const Z0 = await scan(Object.assign({}, pZen, { useStage1: false }), 'orbital zenith, cull OFF');
+    const z1 = new Set(Z1.crossings.map(key)), z0 = new Set(Z0.crossings.map(key));
+    const zLost = [...z0].filter((k) => !z1.has(k));
+    ok('identical crossing set from the orbital station (cull on/off)',
+      z1.size === z0.size && zLost.length === 0,
+      `${z1.size} vs ${z0.size}` + (zLost.length ? `; LOST: ${zLost.slice(0, 8).join(', ')}` : ''));
+    ok('orbital stage 1 still culls something (or it is only fail-open)',
+      Z1.culled.stage1 > 0,
+      `culled ${Z1.culled.stage1} of ${Z1.culled.total - Z1.culled.bad}`);
+
+    // o4 — self-exclusion: the observer is in the catalogue it scans, and a zenith
+    // stare's field contains everything co-planar above it. It must never
+    // identify itself, on either the culled or the brute-force path.
+    ok('the observer never identifies itself (cull ON)',
+      !Z1.crossings.some((c) => c.norad === issObj.norad));
+    ok('the observer never identifies itself (cull OFF)',
+      !Z0.crossings.some((c) => c.norad === issObj.norad));
+
+    // o5 — LVLH sanity: everything in a zenith-stare field sits near the local
+    // zenith, so every reported (LVLH) elevation must be >= 90 - fov - slop.
+    if (Z1.crossings.length) {
+      const worstEl = Math.min(...Z1.crossings.map((c) => c.elDeg));
+      ok('zenith-stare crossings all report near-zenith LVLH elevation',
+        worstEl > 90 - 15 - 10, `lowest ElL ${worstEl.toFixed(1)} deg`);
+    }
   }
 
   // ------------------------------------------------------------------ test c

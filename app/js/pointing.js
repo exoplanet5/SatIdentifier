@@ -34,6 +34,8 @@
   const STYLE_ID = 'pnt-style';
 
   const NO_SITE = 'Alt/Az needs an active site — add one in the Locations window.';
+  const NO_ORBIT_OBJ = 'The orbital site’s NORAD is not in the loaded catalogue ' +
+    '(or cannot be propagated) — load a catalogue containing it first.';
 
   // 6h/24h chips removed in round 3: identification works on short windows, and a
 // long span is still one keystroke in the field itself.
@@ -220,10 +222,10 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     if (o.mode === 'radec') {
       return {
         raDeg: o.raDeg, decDeg: o.decDeg, loc: loc,
-        aa: loc ? F.raDecToAltAz(o.raDeg, o.decDeg, loc, date, opt) : null,
+        aa: loc ? SAT.prop.siteRaDecToAltAz(loc, o.raDeg, o.decDeg, date, opt) : null,
       };
     }
-    const rd = loc ? F.altAzToRaDec(o.azDeg, o.elDeg, loc, date, opt) : null;
+    const rd = loc ? SAT.prop.siteAltAzToRaDec(loc, o.azDeg, o.elDeg, date, opt) : null;
     return {
       raDeg: rd ? rd.raDeg : o.raDeg, decDeg: rd ? rd.decDeg : o.decDeg, loc: loc,
       aa: { azDeg: o.azDeg, elDeg: o.elDeg },
@@ -236,19 +238,20 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     const loc = SAT.state.activeLocation();
     const patch = { raDeg: raDeg, decDeg: decDeg };
     if (loc) {
-      const aa = F.raDecToAltAz(raDeg, decDeg, loc, SAT.clock.getDate(), frameOpts());
-      patch.azDeg = aa.azDeg;
-      patch.elDeg = aa.elDeg;
+      const aa = SAT.prop.siteRaDecToAltAz(loc, raDeg, decDeg, SAT.clock.getDate(), frameOpts());
+      if (aa) { patch.azDeg = aa.azDeg; patch.elDeg = aa.elDeg; }
     }
     SAT.state.setObs(patch);
     return true;
   }
 
-  /** Same, the other way round. Needs a site: alt/az has no meaning without one. */
+  /** Same, the other way round. Needs a site: alt/az has no meaning without one —
+   *  and an orbit site that is missing from the catalogue cannot convert either. */
   function applyAltAz(azDeg, elDeg) {
     const loc = SAT.state.activeLocation();
     if (!loc) { setMsg(NO_SITE, true); return false; }
-    const rd = F.altAzToRaDec(azDeg, elDeg, loc, SAT.clock.getDate(), frameOpts());
+    const rd = SAT.prop.siteAltAzToRaDec(loc, azDeg, elDeg, SAT.clock.getDate(), frameOpts());
+    if (!rd) { setMsg(NO_ORBIT_OBJ, true); return false; }
     SAT.state.setObs({ azDeg: azDeg, elDeg: elDeg, raDeg: rd.raDeg, decDeg: rd.decDeg });
     return true;
   }
@@ -271,10 +274,12 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     // a field given in Alt/Az is what a parked or drift-scanning mount sees. The
     // user can override it immediately below; this is only the sane default.
     if (mode === 'altaz') {
-      const aa = F.raDecToAltAz(o.raDeg, o.decDeg, loc, date, opt);
+      const aa = SAT.prop.siteRaDecToAltAz(loc, o.raDeg, o.decDeg, date, opt);
+      if (!aa) { setMsg(NO_ORBIT_OBJ, true); refresh(); return; }
       SAT.state.setObs({ mode: mode, azDeg: aa.azDeg, elDeg: aa.elDeg, track: 'mount' });
     } else {
-      const rd = F.altAzToRaDec(o.azDeg, o.elDeg, loc, date, opt);
+      const rd = SAT.prop.siteAltAzToRaDec(loc, o.azDeg, o.elDeg, date, opt);
+      if (!rd) { setMsg(NO_ORBIT_OBJ, true); refresh(); return; }
       SAT.state.setObs({ mode: mode, raDeg: rd.raDeg, decDeg: rd.decDeg, track: 'sky' });
     }
     setMsg('');
@@ -632,6 +637,10 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     const row = children => el('div', { class: 'row' }, children);
     const gap = () => el('div', { class: 'pnt-gap' });
     const lbl = t => el('span', { class: 'pnt-lbl' }, t);
+    // Az/El labels get refs: on an orbit site they read AzL/ElL (LVLH angles,
+    // CONTRACT v0.2) and refresh() swaps them live with the active site.
+    const azLbl = lbl('Az');
+    const elLbl = lbl('El');
     const dsym = () => el('span', { class: 'pnt-echo' }, '°');
 
     body.appendChild(el('div', { class: 'pnt-root' }, [
@@ -645,8 +654,8 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
         .concat(trackBtns.map(t => t.btn))),
       row([lbl('RA'), ra.sexIn, ra.decIn, dsym()]),
       row([lbl('Dec'), dec.sexIn, dec.decIn, dsym()]),
-      row([lbl('Az'), az.sexIn, az.decIn, dsym()]),
-      row([lbl('El'), elc.sexIn, elc.decIn, dsym(), elNote]),
+      row([azLbl, az.sexIn, az.decIn, dsym()]),
+      row([elLbl, elc.sexIn, elc.decIn, dsym(), elNote]),
       row([lbl('Preset')].concat(presetBtns.map(p => p.btn))),
       gap(),
       row([lbl('FOV')].concat(shapeBtns.map(s => s.btn))
@@ -661,7 +670,7 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     ui = {
       win: win,
       siteSel, siteInfo, epochIn, spanIn, spanChips,
-      modeBtns, trackBtns,
+      modeBtns, trackBtns, azLbl, elLbl,
       ra, dec, az, elc, elNote, presetBtns,
       shapeBtns, unitBtns, wIn, hIn, rIn, fovTimes, fovRLbl, fovEcho,
       rotIn, flipIn,
@@ -674,6 +683,8 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
 
     SAT.bus.on('state-loaded', () => { buildSites(); buildCameras(''); refresh(); });
     SAT.bus.on('locations-changed', () => { buildSites(); refresh(); });
+    // an orbit site's line resolves its NORAD against the catalogue live
+    SAT.bus.on('catalog-changed', refresh);
     SAT.bus.on('obs-changed', refresh);
     SAT.bus.on('selection-changed', refresh);
     SAT.bus.on('time', onTime);
@@ -703,10 +714,35 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     // site
     const wantSite = loc ? loc.id : '';
     if (ui.siteSel.value !== wantSite) ui.siteSel.value = wantSite;
-    ui.siteInfo.textContent = loc
-      ? loc.latDeg.toFixed(4) + '°N ' + loc.lonDeg.toFixed(4) + '°E ' +
-        Math.round(loc.altM || 0) + ' m'
-      : 'no active site — Alt/Az and the scan are unavailable';
+    const orbitSite = !!(loc && (loc.kind || 'ground') === 'orbit');
+    if (!loc) {
+      ui.siteInfo.textContent = 'no active site — Alt/Az and the scan are unavailable';
+      ui.siteInfo.style.color = '';
+    } else if (orbitSite) {
+      const oo = SAT.state.objByNorad(loc.norad);
+      ui.siteInfo.textContent = 'NORAD ' + loc.norad + ' · ' +
+        (oo ? oo.name : 'not in catalogue — load one that contains it');
+      ui.siteInfo.style.color = oo ? '' : 'var(--danger)';
+    } else {
+      ui.siteInfo.textContent = loc.latDeg.toFixed(4) + '°N ' +
+        loc.lonDeg.toFixed(4) + '°E ' + Math.round(loc.altM || 0) + ' m';
+      ui.siteInfo.style.color = '';
+    }
+
+    // Az/El mean LVLH angles on an orbit site; the mount track is LVLH-locked.
+    ui.azLbl.textContent = orbitSite ? 'AzL' : 'Az';
+    ui.azLbl.title = orbitSite
+      ? 'LVLH azimuth: 0° = along-track (velocity), 90° = toward the orbit normal' : '';
+    ui.elLbl.textContent = orbitSite ? 'ElL' : 'El';
+    ui.elLbl.title = orbitSite
+      ? 'LVLH elevation: +90° = zenith (radially out), −90° = nadir' : '';
+    const mountBtn = ui.trackBtns.find(t => t.track === 'mount');
+    if (mountBtn) {
+      mountBtn.btn.textContent = orbitSite ? 'LVLH' : 'Mount';
+      mountBtn.btn.title = orbitSite
+        ? 'field fixed in the LVLH orbital frame (a body-mounted staring sensor)'
+        : 'field fixed in alt/az (parked mount / drift scan)';
+    }
 
     // start + span
     setVal(ui.epochIn, U.fmtDate(SAT.clock.getDate()));
@@ -733,11 +769,12 @@ const SPAN_CHIPS = [['1m', 1], ['3m', 3], ['5m', 5], ['10m', 10], ['1h', 60]];
     if (s.aa) {
       setPair(ui.az, radec, fmtAz(s.aa.azDeg), s.aa.azDeg.toFixed(4));
       setPair(ui.elc, radec, U.fmtDec(s.aa.elDeg), s.aa.elDeg.toFixed(4));
-      ui.elNote.textContent = 'apparent';
+      // 'apparent' is a refraction word; LVLH angles are geometric by definition
+      ui.elNote.textContent = orbitSite ? 'LVLH' : 'apparent';
     } else {
       setPair(ui.az, true, '—', '—');
       setPair(ui.elc, true, '—', '—');
-      ui.elNote.textContent = 'needs an active site';
+      ui.elNote.textContent = loc ? 'orbital site not in catalogue' : 'needs an active site';
     }
     const selBtn = ui.presetBtns.find(p => p.key === 'sel');
     if (selBtn) selBtn.btn.disabled = !(SAT.state.selection && SAT.state.selection.satId);

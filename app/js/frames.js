@@ -262,6 +262,51 @@
     return { x: satTemeKm.x - s.x, y: satTemeKm.y - s.y, z: satTemeKm.z - s.z };
   }
 
+  // ---- LVLH (orbital observer) frame ----------------------------------------
+  // CONTRACT.md "Orbital observing stations": R = zenith (radially out),
+  // W = orbit normal (r x v), S = along-track (W x R). Az is measured from S
+  // toward W — same rotational sense as ground azimuth N->E, with "north" played
+  // by the velocity direction; El from the local-horizontal plane toward R
+  // (nadir = -90). Pure vector algebra: works in whatever frame r and v share.
+
+  /** Orthonormal LVLH basis from an observer position/velocity. Null for a
+   *  degenerate PV (|r| = 0 or r parallel to v) — callers surface that, a basis
+   *  of NaNs would poison every angle downstream. */
+  function lvlhBasis(r, v) {
+    const rn = Math.sqrt(r.x * r.x + r.y * r.y + r.z * r.z);
+    if (!(rn > 0)) return null;
+    const R = { x: r.x / rn, y: r.y / rn, z: r.z / rn };
+    const w = { x: r.y * v.z - r.z * v.y, y: r.z * v.x - r.x * v.z, z: r.x * v.y - r.y * v.x };
+    const wn = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+    if (!(wn > 0)) return null;
+    const W = { x: w.x / wn, y: w.y / wn, z: w.z / wn };
+    const S = { x: W.y * R.z - W.z * R.y, y: W.z * R.x - W.x * R.z, z: W.x * R.y - W.y * R.x };
+    return { R: R, S: S, W: W };
+  }
+
+  /** LVLH az/el -> unit vector in the basis' parent frame. */
+  function lvlhToVec(azDeg, elDeg, basis) {
+    const a = azDeg * D2R, e = elDeg * D2R;
+    const ce = Math.cos(e), se = Math.sin(e);
+    const cs = ce * Math.cos(a), cw = ce * Math.sin(a);
+    return {
+      x: cs * basis.S.x + cw * basis.W.x + se * basis.R.x,
+      y: cs * basis.S.y + cw * basis.W.y + se * basis.R.y,
+      z: cs * basis.S.z + cw * basis.W.z + se * basis.R.z,
+    };
+  }
+
+  /** Vector (parent frame) -> LVLH az/el degrees. */
+  function vecToLvlh(vec, basis) {
+    const s = vec.x * basis.S.x + vec.y * basis.S.y + vec.z * basis.S.z;
+    const w = vec.x * basis.W.x + vec.y * basis.W.y + vec.z * basis.W.z;
+    const r = vec.x * basis.R.x + vec.y * basis.R.y + vec.z * basis.R.z;
+    const n = Math.sqrt(s * s + w * w + r * r) || 1;
+    let az = Math.atan2(w, s) * R2D;
+    if (az < 0) az += 360;
+    return { azDeg: az, elDeg: Math.asin(Math.max(-1, Math.min(1, r / n))) * R2D };
+  }
+
   // ---- spherical helpers ---------------------------------------------------
 
   function vecToRaDec(v) {
@@ -482,6 +527,7 @@
     precessionMatrix, nutationMatrix, apply, applyT, rot3,
     temeToJ2000, j2000ToTeme, j2000ToTod, todToJ2000,
     siteEcefKm, siteTemeKm, topoTeme,
+    lvlhBasis, lvlhToVec, vecToLvlh,
     vecToRaDec, raDecToVec, sep, posAngle,
     refractionDeg, refractionInvDeg, lastRad, raDecToAltAz, altAzToRaDec,
     sunJ2000, sunTemeKm, moonJ2000,

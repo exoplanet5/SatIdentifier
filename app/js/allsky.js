@@ -477,6 +477,20 @@
       elFoot.textContent = '';
       return;
     }
+    // The All-Sky view IS a ground-horizon projection (az rings, N/E/S/W, zenith
+    // at centre) — for an orbital station it would render nonsense, so it says so
+    // instead (CONTRACT v0.2 "UI consequences"). The sky chart is the view there.
+    if ((loc.kind || 'ground') === 'orbit') {
+      ctx.fillStyle = '#9aa4ae';
+      ctx.font = '12px ' + MONO;
+      ctx.textAlign = 'center';
+      ctx.fillText('All-Sky is a ground-horizon view — the active site is an orbital station.',
+        m.cx, m.cy - 8);
+      ctx.fillText('Use the Sky Chart, which works for both site kinds.', m.cx, m.cy + 10);
+      elHud.style.display = 'none';
+      elFoot.textContent = loc.name + ' · NORAD ' + loc.norad;
+      return;
+    }
 
     drawGrid(m);
     try {

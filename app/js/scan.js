@@ -111,25 +111,40 @@
   /** Resolve the user's pointing into whichever pair the worker needs.
    *
    *  track 'sky' wants a fixed J2000 RA/Dec, so an alt/az pointing is converted once
-   *  at t0. track 'mount' wants a fixed apparent alt/az, so an RA/Dec pointing is
-   *  converted once at t0 and then held. Doing this here keeps the worker's
-   *  per-epoch pointing step to a single rotation. */
-  function pointingOf(obs, loc, t0) {
+   *  at t0. track 'mount' wants a fixed apparent alt/az (ground) or LVLH pair
+   *  (orbit), so an RA/Dec pointing is converted once at t0 and then held. Doing
+   *  this here keeps the worker's per-epoch pointing step to a single rotation.
+   *
+   *  Conversions go through SAT.prop's kind-dispatching converters: for a ground
+   *  site they ARE frames.altAzToRaDec/raDecToAltAz with refraction (round-2
+   *  review); for an orbit site they are the LVLH basis with refraction off, a
+   *  ground-site rule that never applies in vacuum (CONTRACT v0.2). A null
+   *  conversion means the observer could not be propagated at t0 — that fails the
+   *  scan here, loudly, rather than posting NaNs to six workers. */
+  function pointingOf(obs, rs, t0) {
     const track = obs.track === 'mount' ? 'mount' : 'sky';
-    const refract = true;   // refraction is always applied (round-2 review)
+    const refract = rs.kind !== 'orbit';
+    const opt = { refract: refract };
+    const cvAA = (ra, dec) => SAT.prop.siteRaDecToAltAz(rs, ra, dec, t0, opt);
+    const cvRD = (az, el) => SAT.prop.siteAltAzToRaDec(rs, az, el, t0, opt);
+    const bad = () => new Error('observer NORAD ' + rs.norad +
+      ' cannot be propagated at the scan start — its TLE may be unusable at this epoch');
     const out = { track: track, mode: obs.mode, refract: refract };
     if (track === 'mount') {
       if (obs.mode === 'altaz') { out.azDeg = obs.azDeg; out.elDeg = obs.elDeg; }
       else {
-        const aa = SAT.frames.raDecToAltAz(obs.raDeg, obs.decDeg, loc, t0, { refract: refract });
+        const aa = cvAA(obs.raDeg, obs.decDeg);
+        if (!aa) throw bad();
         out.azDeg = aa.azDeg; out.elDeg = aa.elDeg;
       }
       // the J2000 pair is still filled in so the UI has something to display
-      const rd = SAT.frames.altAzToRaDec(out.azDeg, out.elDeg, loc, t0, { refract: refract });
+      const rd = cvRD(out.azDeg, out.elDeg);
+      if (!rd) throw bad();
       out.raDeg = rd.raDeg; out.decDeg = rd.decDeg;
     } else {
       if (obs.mode === 'altaz') {
-        const rd = SAT.frames.altAzToRaDec(obs.azDeg, obs.elDeg, loc, t0, { refract: refract });
+        const rd = cvRD(obs.azDeg, obs.elDeg);
+        if (!rd) throw bad();
         out.raDeg = rd.raDeg; out.decDeg = rd.decDeg;
       } else { out.raDeg = obs.raDeg; out.decDeg = obs.decDeg; }
       out.azDeg = obs.azDeg; out.elDeg = obs.elDeg;
@@ -149,7 +164,13 @@
     const obs = Object.assign({}, SAT.state.obs, overrides || {});
     const st = Object.assign(scanSettings(), overrides || {});
     const objects = ((SAT.state.catalog && SAT.state.catalog.objs) || []).length;
-    const coarseStepS = Math.max(0.5, st.coarseStepS);
+    // Mirror of the worker's orbit-site clamp (CONTRACT "Stage 2/3 under a moving
+    // observer") — the refusal maths must count what will actually run.
+    const loc = SAT.state.activeLocation && SAT.state.activeLocation();
+    const orbitSite = !!(loc && (loc.kind || 'ground') === 'orbit');
+    const coarseStepS = orbitSite
+      ? Math.max(0.5, Math.min(10, st.coarseStepS))
+      : Math.max(0.5, st.coarseStepS);
     const spanMin = Math.max(0, obs.spanMin || 0);
     const coarseSteps = Math.round(spanMin * 60 / coarseStepS) + 1;
     const propagations = objects * coarseSteps;
@@ -193,6 +214,16 @@
     const objs = (SAT.state.catalog && SAT.state.catalog.objs) || [];
     if (!objs.length) throw new Error('No catalogue loaded — fetch one in the Sources window.');
 
+    // Resolve the site kind ONCE: an orbit site's TLE comes out of the loaded
+    // catalogue, and the worker owns satrecs for its shard only, so the observer's
+    // lines ride in the params to every worker (CONTRACT worker protocol).
+    const rs = SAT.state.resolvedSite(loc);
+    if (rs.kind === 'orbit' && rs.missing) {
+      throw new Error('Orbital site "' + loc.name + '": NORAD ' + loc.norad +
+        ' is not in the loaded catalogue. Load a catalogue that contains it ' +
+        '(Catalogue window), or choose a different observer.');
+    }
+
     const est = estimate();
     if (est.tooLarge) {
       const err = new Error(tooLargeMessage(est));
@@ -208,8 +239,11 @@
     const params = {
       t0Ms: t0Ms,
       spanMin: obs.spanMin,
-      site: { latDeg: loc.latDeg, lonDeg: loc.lonDeg, altM: loc.altM },
-      pointing: pointingOf(obs, loc, t0),
+      site: rs.kind === 'orbit'
+        ? { kind: 'orbit', norad: rs.norad, l1: rs.l1, l2: rs.l2,
+            name: rs.objName || loc.name }
+        : { kind: 'ground', latDeg: loc.latDeg, lonDeg: loc.lonDeg, altM: loc.altM },
+      pointing: pointingOf(obs, rs, t0),
       fov: fovOf(obs),
       filters: { minElDeg: (SAT.state.filters && SAT.state.filters.minElDeg) || 0 },
       steps: { coarseStepS: st.coarseStepS, fineStepS: st.fineStepS, marginDeg: st.marginDeg },

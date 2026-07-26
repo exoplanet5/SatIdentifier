@@ -30,7 +30,7 @@ import webbrowser
 import zipfile
 from email.utils import formatdate
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 USER_AGENT = "SatIdentifier/0.1"
 FETCH_TIMEOUT = 30            # seconds, all outbound HTTP
 CACHE_FRESH_S = 2 * 3600      # CelesTrak group cache considered fresh below this age
