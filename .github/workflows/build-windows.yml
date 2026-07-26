@@ -25,7 +25,12 @@ jobs:
     runs-on: windows-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     steps:
+      # fetch-depth 0: the final step rebases the zip commit onto whatever landed
+      # on main during the ~6 min build; a depth-1 shallow clone cannot rebase
+      # across those commits and failed exactly that way on 9450fdd (2026-07-26).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

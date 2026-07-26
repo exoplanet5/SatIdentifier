@@ -4,10 +4,14 @@ The inverse of a satellite tracker. Instead of asking *where is this satellite*,
 asks **who is in my field of view** — so an unidentified trail on a frame can be
 matched against the catalogue.
 
-Give it a site, an epoch and a timespan, a pointing (RA/Dec J2000 or Alt/Az) and a
-field of view. It finds every catalogued object that crosses that field and draws
-each trail on a gnomonic sky chart over a real star background, directly comparable
-against your frame.
+Give it a site, an epoch and a timespan, a pointing (RA/Dec J2000, Alt/Az, or LVLH
+angles from orbit) and a field of view. It finds every catalogued object that
+crosses that field and draws each trail on a gnomonic sky chart over a real star
+background, directly comparable against your frame.
+
+The site itself can be a **satellite** (space-based SSA): pick any object in the
+loaded catalogue by NORAD number and the scan runs from *its* sensor — who crosses
+my field, seen from orbit.
 
 Local Python backend (catalogue fetching, caching, persistence — standard library
 only) + browser frontend (SGP4 in Web Workers, canvas chart). Companion to
@@ -66,10 +70,37 @@ In dev mode data lives in `./data/`.
    everything merges into one catalogue, deduplicated by NORAD with the newest
    elements winning, and **epoch-age statistics are shown per source**, because
    stale elements are the main cause of a failed identification.
-2. **Sites** — add your observing site and mark it active.
+2. **Sites** — add your observing site and mark it active. Two kinds: **Ground**
+   (lat / lon / alt) or **Orbit** (an observing satellite, picked from the loaded
+   catalogue by NORAD number or name — the TLE is resolved live from the
+   catalogue, so the observer can never go stale against the targets).
 3. **Pointing** — start time, timespan, pointing, field of view.
 4. **Crossings** — press *Scan*.
 5. **Sky Chart** — compare the trails against your frame.
+
+## Observing from orbit (space-based SSA)
+
+With an Orbit site active, the same pipeline answers "who crosses my sensor's
+field" for a satellite-mounted instrument:
+
+- **Az/El become LVLH angles** (labelled AzL/ElL): Az from the along-track
+  (velocity) direction toward the orbit normal, El from the local horizontal
+  toward zenith (radially out; −90° = nadir). The *Mount* tracking mode becomes
+  **LVLH** — a body-fixed staring sensor, drifting through the stars at the
+  orbital rate exactly as a parked ground mount drifts at the sidereal rate.
+- **Earth-limb occlusion replaces the horizon**: a target is dropped only while
+  the line of sight passes through the Earth itself, and entry/exit times resolve
+  a target *rising from behind the limb* the same way they resolve a field edge.
+  No refraction, ever, in orbit.
+- The observer **never identifies itself**, and its own TLE error is added to the
+  match tolerance — at the sensor it is indistinguishable from the target's.
+- All-Sky is a ground-horizon projection and says so on an Orbit site; the Sky
+  Chart works for both kinds.
+
+The soundness proofs run over orbital geometry too: the geometric cull returns
+the identical crossing set with the cull disabled, and every reported position
+agrees with an independent two-body recompute to ~0.01″ (see `tools/test_scan.js`
+section [o]).
 
 ## What it computes
 
@@ -81,9 +112,11 @@ In dev mode data lives in `./data/`.
   sidereally-guided frame — note a geostationary object is *not* stationary here, it
   drifts at ~15″/s, which is why GEO streaks in tracked images. Against the
   **horizon** (`d(alt,az)/dt`) is what a parked mount sees, where GEO is a fixed dot
-  and the stars trail instead. The chart draws whichever matches your tracking mode,
-  including the field rotation a parked mount sees, and the trail drawn across the
-  field between entry and exit is the thing to hold up against your frame.
+  and the stars trail instead — on an Orbit site this second rate is measured
+  against the LVLH frame, i.e. what a body-fixed staring sensor records. The chart
+  draws whichever matches your tracking mode, including the field rotation a parked
+  mount sees, and the trail drawn across the field between entry and exit is the
+  thing to hold up against your frame.
 - **Star background** from Tycho-2 to V = 9.0 (130 183 stars), with BSC5/HYG
   photometry at the bright end. Deep enough that a 1° field is not empty.
 
@@ -108,6 +141,7 @@ against a star field:
 | UT1−UTC ignored by default | ≤ 0.9 s ⇒ **≤ 2.9′** | optional `DUT1` setting |
 | Refraction | 1.7′ at El 30°, 5.4′ at El 10° | always applied |
 | Annual aberration | ≤ 20.5″ | no — see below |
+| Light time + orbital aberration (Orbit sites) | ≤ ~5″ each | no — two orders under TLE slop |
 | Precession + nutation | < 1″ | **yes** |
 
 Aberration is applied to neither satellites nor stars, so the chart and the objects
