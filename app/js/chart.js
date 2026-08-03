@@ -517,14 +517,17 @@
         st = cache.stars[i];
         p = proj(st.raDeg, st.decDeg, ra0, dec0, t);
         if (!onScreen(p, 4)) continue;
-        // Radius/alpha vs magnitude, retuned in round 4: the old curve clamped
-        // everything fainter than m7 to a 0.6 px dot at alpha 0.25, so the deep
-        // catalogue's m9-10.5 stars were invisible and the brightness ordering
-        // unreadable. Floors of 0.9 px / alpha 0.5 keep the faint end visible;
-        // the slopes keep Vega obviously bigger than an m8 field star.
-        // stars are the bright ones
-        var rad = Math.max(0.9, 3.8 - 0.30 * st.mag);
-        var alpha = Math.max(0.5, 1.0 - 0.055 * st.mag);
+        // Radius/alpha vs magnitude, retuned in round 9 (was linear 3.8 - 0.30m):
+        // a linear ramp spends most of its range on the handful of m<3 stars and
+        // compresses m4-9 — where nearly every background star lives — into
+        // ~1.5 px, so the field read as same-size dots. Radius now follows the
+        // flux law, shrinking ~18% per magnitude (area halves every ~1.8 mag):
+        // every step of the sequence is a visible step on screen. m0 = 5.2 px,
+        // m3 = 2.9, m5 = 2.0, m7 = 1.3, m9 = 0.9; capped at 6.5 px so Sirius is
+        // a star and not a blob, floored at 0.7 px / alpha 0.42 so the deep
+        // catalogue's m9-10.5 end stays visible rather than clipped away.
+        var rad = Math.min(6.5, Math.max(0.7, 5.2 * Math.pow(10, -0.085 * st.mag)));
+        var alpha = Math.max(0.42, Math.min(1, 1.04 - 0.058 * st.mag));
         ctx.beginPath();
         ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(225,235,255,' + alpha.toFixed(2) + ')';

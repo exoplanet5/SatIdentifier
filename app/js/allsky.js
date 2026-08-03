@@ -665,6 +665,32 @@
       try { SAT.state.clickSelect(best ? best.id : null); } catch (err) { /* ignore */ }
     });
 
+    // Double-click re-aims the pointing, mirroring the sky chart's dblclick.
+    // The all-sky projection is trivially invertible (radius = zenith distance),
+    // so the click maps to az/el directly; both representations are written, the
+    // same as pointing.applyAltAz, so the re-aim works in either input mode.
+    canvas.addEventListener('dblclick', function (e) {
+      var loc = SAT.state.activeLocation();
+      if (!loc || (loc.kind || 'ground') === 'orbit') return;  // panel is gated there
+      var r = canvas.getBoundingClientRect();
+      var m = metrics();
+      var sx = cfg().eastLeft ? -1 : 1;
+      var dx = (e.clientX - r.left - m.cx) * sx;
+      var dy = m.cy - (e.clientY - r.top);
+      var rr = Math.hypot(dx, dy);
+      if (rr > m.R * (95 / 90)) return;        // outside the horizon circle
+      var azDeg = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+      var elDeg = Math.max(-5, 90 - 90 * rr / m.R);
+      try {
+        var rd = SAT.prop.siteAltAzToRaDec(loc, azDeg, elDeg,
+          SAT.clock ? SAT.clock.getDate() : new Date(),
+          { refract: true, dut1S: SAT.state.obs.dut1S });
+        if (!rd) return;
+        SAT.state.setObs({ raDeg: rd.raDeg, decDeg: rd.decDeg,
+          azDeg: azDeg, elDeg: elDeg });     // marks the scan stale, as a re-aim must
+      } catch (err) { /* a bad epoch degrades to no-op, not nonsense pointing */ }
+    });
+
     body.addEventListener('win-resize', resize);
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe(body);
     resize();
