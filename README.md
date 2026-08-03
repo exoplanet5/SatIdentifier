@@ -117,8 +117,12 @@ section [o]).
   draws whichever matches your tracking mode, including the field rotation a parked
   mount sees, and the trail drawn across the field between entry and exit is the
   thing to hold up against your frame.
-- **Star background** from Tycho-2 to V = 9.0 (130 183 stars), with BSC5/HYG
-  photometry at the bright end. Deep enough that a 1° field is not empty.
+- **Star background** on the sky chart is the SatObserver bright-star set (BSC5/HYG,
+  to V = 4.6) with star names, constellation lines and names, a Milky Way isophote
+  layer and Sun/Moon (with lunar phase) — each on its own toolbar toggle. Unlike
+  SatObserver there is no twilight/daylight sky tint: the chart is a J2000 field
+  view, so the background stays dark. The deep Tycho-2 catalogue (V ≤ 9.0,
+  130 183 stars) still ships and feeds the All-Sky panel.
 
 ## Accuracy — read this before trusting an identification
 

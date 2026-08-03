@@ -30,6 +30,7 @@ Namespace stays `SAT` (not `SATID`) so modules ported from SatObserver work unch
     assets/stars_m9.bin      # deep star catalogue, ~120k stars to V=9.0 (binary, ~1.4 MB)
     js/vendor/satellite.min.js   # satellite.js 5.0 UMD -> global `satellite`
     js/vendor/starcat.js         # bright stars + constellation lines/names (from SatObserver)
+    js/vendor/mwdata.js          # Milky Way isophotes -> SAT.mwdata (from SatObserver)
     js/util.js               # SAT.util      (port from SatObserver + additions)
     js/frames.js             # SAT.frames    NEW  (AGENT F)
     js/windows.js            # SAT.windows   (port, unchanged)
@@ -308,7 +309,9 @@ SAT.state.locations = [{ id, name, kind, latDeg, lonDeg, altM, norad, active: fa
 
 SAT.state.settings = {
   chart:  { stars:true, starNames:false, constLines:true, constNames:false,
-            grid:true, magLimit:9.0, labels:true, padFrac:0.7 },
+            sunMoon:true, mw:false, grid:true, labels:true, padFrac:0.7 },
+  // round 11: chart.magLimit retired — the chart star background is the bright
+  // catalogue only (see "Chart star background"); a stored magLimit is ignored.
   allsky: { eastLeft:true, elStep:30, stars:true },
   scan:   { coarseStepS:30, fineStepS:1.0, marginDeg:0 /*0 = auto*/,
             workers:0 /*0 = auto: hardwareConcurrency-1, capped 8*/,
@@ -721,7 +724,10 @@ penumbra dims by `2.5·log10` of the unobscured solar fraction).
 ## SAT.stars (stars.js) — AGENT S
 
 Loads `assets/stars_m9.bin` once (fetch → ArrayBuffer → typed-array views) and answers
-cone queries for the chart. Falls back to `SAT.stardata` (the bright-star catalogue
+cone queries. Since round 11 the only cone consumer is the **All-Sky panel** — the
+chart's star background is the bright catalogue only (see "Chart star background");
+the chart still uses `named()` / `constellationLines()`, which are bright-catalogue
+helpers anyway. Falls back to `SAT.stardata` (the bright-star catalogue
 from SatObserver, mag ≤ 4.6) when the deep file is absent, so the app still runs
 before `tools/make_starcat.py` has been executed.
 
@@ -800,9 +806,28 @@ view and gets the largest default window.
   chart matches their frame. Always visible; this is the thing people get wrong.
 - Layers, respecting `settings.chart` and redrawing on `time / obs-changed /
   scan-done / filters-changed / selection-changed / settings-changed / state-loaded`:
-  - stars from `SAT.stars.cone` down to `settings.chart.magLimit`, radius from
-    magnitude (same curve as `allsky.js`); names + constellation lines when the field
-    is wider than 5°.
+  - **Chart star background (round 11 — SatObserver fallback, binding).** Stars come
+    from the bright catalogue `SAT.stardata` ONLY (BSC5/HYG, V ≤ 4.6) — the chart
+    does not query `SAT.stars.cone` and has no magnitude-limit control; the deep
+    Tycho-2/Gaia catalogue remains, but serves the All-Sky panel alone. Radius and
+    alpha follow the SatObserver skychart law verbatim
+    (`rad = max(0.6, 2.7 − 0.45·mag)`, `alpha = max(0.25, 0.95 − 0.13·mag)`).
+    Star names, constellation lines AND constellation names (`constNames`, its own
+    toolbar toggle) draw on fields wider than 5°.
+  - **Milky Way** isophote layer (`settings.chart.mw`, default off): the d3-celestial
+    contours from `vendor/mwdata.js`, ported from the SatObserver polar chart to the
+    gnomonic frame — far-hemisphere / near-90° vertices are clamped radially to an
+    off-screen rim so fills stay finite, and any ring whose projected outline
+    swallows the north galactic pole (a point outside every isophote) gets a
+    rim-circle subpath to flip even-odd parity back, exactly as in SatObserver.
+    **Documented deviation from SatObserver:** NO twilight/daylight sky tint and no
+    MW twilight fade — the chart is a J2000 field view, not a local-sky view, so its
+    background stays the fixed dark theme regardless of the sun.
+  - **Sun and Moon** (`settings.chart.sunMoon`, default on): SatObserver-style icons
+    — rayed sun disc, moon with its phase terminator, bright limb facing the sun's
+    chart direction (via a waypoint 1° along the moon→sun great circle, since the
+    sun itself may be over the tangent-plane horizon) — plus the
+    "moon %.0f° away" footer note while the layer is on.
   - the FOV outline: solid rectangle (or circle) in the accent colour, with the
     field's angular size labelled on the edges; the region outside is dimmed ~25%.
   - a grid of RA/Dec lines with labels when `settings.chart.grid` (spacing chosen
@@ -819,7 +844,6 @@ view and gets the largest default window.
     two-second label;
     the current position at `SAT.clock.getDate()` as a filled square + label
     (name, and magnitude when known); the selected object gets a white ring.
-  - Sun and Moon markers when within the field, with a "moon %.0f° away" note.
 - Interaction: hover shows a readout of cursor RA/Dec (and Alt/Az); click within 8 px
   of a marker selects that object; click elsewhere deselects; shift-click also
   re-aims but keeps the view still (both paths mark the scan stale; in alt/az mode

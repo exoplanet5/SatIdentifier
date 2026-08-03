@@ -76,7 +76,7 @@
     return {
       chart: {
         stars: true, starNames: false, constLines: true, constNames: false,
-        grid: true, magLimit: 9.0, labels: true, padFrac: 0.7,
+        sunMoon: true, mw: false, grid: true, labels: true, padFrac: 0.7,
       },
       allsky: { eastLeft: true, elStep: 30, stars: true,
                 starNames: false, constLines: false, constNames: false },

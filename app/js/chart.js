@@ -33,12 +33,12 @@
   var toolBtns = {};
   var drag = null;
 
-  // Star cone results. Re-queried only when the tangent point or the view radius
-  // moves by more than 10% of the field — a cone query walks 130k stars, and doing
-  // that on every animation frame is the difference between 60 fps and 6.
+  // Star-field clip results. Re-queried only when the tangent point or the view
+  // radius moves by more than 10% of the field — cheap over the ~1000-star bright
+  // catalogue, but the cache also covers the named/lines helpers.
   var starCache = {
-    ok: false, ra0: 0, dec0: 0, radiusDeg: 0, queryDeg: 0, magLimit: -99,
-    stars: [], named: [], lines: [],
+    ok: false, ra0: 0, dec0: 0, radiusDeg: 0, queryDeg: 0,
+    stars: [], named: [], lines: [], cons: [],
   };
 
   // Detector frame, rebuilt once per render. `ref` is the frame at the clock time;
@@ -76,8 +76,9 @@
     if (c.starNames == null) c.starNames = false;
     if (c.constLines == null) c.constLines = true;
     if (c.constNames == null) c.constNames = false;
+    if (c.sunMoon == null) c.sunMoon = true;
+    if (c.mw == null) c.mw = false;             // Milky Way layer, off by default
     if (c.grid == null) c.grid = true;
-    if (c.magLimit == null) c.magLimit = 9.0;
     if (c.labels == null) c.labels = true;
     if (c.padFrac == null) c.padFrac = 0.7;
     return c;
@@ -340,36 +341,54 @@
   }
 
   // ---- star layer ----------------------------------------------------------
+  // Round 11: the chart star background fell back to the SatObserver logic — the
+  // bright catalogue (SAT.stardata, V <= 4.6) ONLY. The deep Tycho-2/Gaia catalogue
+  // still exists but serves the All-Sky panel alone; this chart never calls
+  // SAT.stars.cone. See CONTRACT "Chart star background".
 
-  /** Cone query with caching. Queries 1.2x wider than needed so the 10%-of-field
+  /** Field clip with caching. Queries 1.2x wider than needed so the 10%-of-field
    *  reuse window below is always fully covered by the cached disc. */
-  function ensureStars(ra0, dec0, radiusDeg, magLimit) {
+  function ensureStars(ra0, dec0, radiusDeg) {
     var c = starCache;
-    if (!SAT.stars || typeof SAT.stars.cone !== 'function') {
-      // stars.js absent or not loaded yet: an empty field, never a thrown render
-      c.ok = false; c.stars = []; c.named = []; c.lines = [];
-      return c;
-    }
     var slack = 0.10 * radiusDeg;
-    if (c.ok && c.magLimit === magLimit
-        && Math.abs(radiusDeg - c.radiusDeg) <= slack
+    if (c.ok && Math.abs(radiusDeg - c.radiusDeg) <= slack
         && SAT.frames.sep(c.ra0, c.dec0, ra0, dec0) <= slack) {
       return c;
     }
     var q = radiusDeg * 1.2;
-    var stars = [], named = [], lines = [];
-    try { stars = SAT.stars.cone(ra0, dec0, q, magLimit) || []; } catch (e) { stars = []; }
+    var sep = SAT.frames.sep;
+    var sd = (typeof SAT !== 'undefined' && SAT.stardata) || {};
+    var stars = [], named = [], lines = [], cons = [];
+    var i, ra;
+    var src = sd.stars || [];                  // rows: [raDeg(-180..180), decDeg, mag]
+    for (i = 0; i < src.length; i++) {
+      ra = ((src[i][0] % 360) + 360) % 360;
+      if (sep(ra0, dec0, ra, src[i][1]) <= q) {
+        stars.push({ raDeg: ra, decDeg: src[i][1], mag: src[i][2] });
+      }
+    }
+    var cn = sd.cons || [];                    // rows: [raDeg, decDeg, name]
+    for (i = 0; i < cn.length; i++) {
+      ra = ((cn[i][0] % 360) + 360) % 360;
+      if (sep(ra0, dec0, ra, cn[i][1]) <= q) {
+        cons.push({ raDeg: ra, decDeg: cn[i][1], name: cn[i][2] });
+      }
+    }
+    // names and constellation figures via stars.js — those helpers are
+    // bright-catalogue clippers already (and lines keeps the midpoint test)
     try {
-      if (typeof SAT.stars.named === 'function') named = SAT.stars.named(ra0, dec0, q) || [];
+      if (SAT.stars && typeof SAT.stars.named === 'function') {
+        named = SAT.stars.named(ra0, dec0, q) || [];
+      }
     } catch (e) { named = []; }
     try {
-      if (typeof SAT.stars.constellationLines === 'function') {
+      if (SAT.stars && typeof SAT.stars.constellationLines === 'function') {
         lines = SAT.stars.constellationLines(ra0, dec0, q) || [];
       }
     } catch (e) { lines = []; }
     c.ok = true; c.ra0 = ra0; c.dec0 = dec0;
-    c.radiusDeg = radiusDeg; c.queryDeg = q; c.magLimit = magLimit;
-    c.stars = stars; c.named = named; c.lines = lines;
+    c.radiusDeg = radiusDeg; c.queryDeg = q;
+    c.stars = stars; c.named = named; c.lines = lines; c.cons = cons;
     return c;
   }
 
@@ -489,7 +508,7 @@
     var c = cfg();
     if (!c.stars && !c.constLines && !c.starNames && !c.constNames) return;
     var fr = viewRadiusDeg(t);
-    var cache = ensureStars(ra0, dec0, fr, c.magLimit);
+    var cache = ensureStars(ra0, dec0, fr);
     var spanDeg = cssW / Math.max(1e-9, t.scale);
     var i, j, p, prev, st;
 
@@ -517,17 +536,10 @@
         st = cache.stars[i];
         p = proj(st.raDeg, st.decDeg, ra0, dec0, t);
         if (!onScreen(p, 4)) continue;
-        // Radius/alpha vs magnitude, retuned in round 9 (was linear 3.8 - 0.30m):
-        // a linear ramp spends most of its range on the handful of m<3 stars and
-        // compresses m4-9 — where nearly every background star lives — into
-        // ~1.5 px, so the field read as same-size dots. Radius now follows the
-        // flux law, shrinking ~18% per magnitude (area halves every ~1.8 mag):
-        // every step of the sequence is a visible step on screen. m0 = 5.2 px,
-        // m3 = 2.9, m5 = 2.0, m7 = 1.3, m9 = 0.9; capped at 6.5 px so Sirius is
-        // a star and not a blob, floored at 0.7 px / alpha 0.42 so the deep
-        // catalogue's m9-10.5 end stays visible rather than clipped away.
-        var rad = Math.min(6.5, Math.max(0.7, 5.2 * Math.pow(10, -0.085 * st.mag)));
-        var alpha = Math.max(0.42, Math.min(1, 1.04 - 0.058 * st.mag));
+        // the SatObserver skychart law, verbatim — a linear ramp is the right
+        // shape for the bright catalogue's mag −1.5..4.6 span
+        var rad = Math.max(0.6, 2.7 - 0.45 * st.mag);
+        var alpha = Math.max(0.25, 0.95 - 0.13 * st.mag);
         ctx.beginPath();
         ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(225,235,255,' + alpha.toFixed(2) + ')';
@@ -544,6 +556,140 @@
         haloText(nm.name, p.x + 5, p.y - 4, 'rgba(185,205,240,0.9)');
       }
     }
+
+    if (c.constNames && spanDeg > 5 && cache.cons.length) {
+      ctx.font = 'italic 10px ' + MONO;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (i = 0; i < cache.cons.length; i++) {
+        var cn = cache.cons[i];
+        p = proj(cn.raDeg, cn.decDeg, ra0, dec0, t);
+        if (!onScreen(p, 0)) continue;
+        ctx.fillStyle = 'rgba(140,165,205,0.55)';
+        ctx.fillText(cn.name, p.x, p.y);
+      }
+      ctx.textAlign = 'left';
+    }
+  }
+
+  // ---- Milky Way -----------------------------------------------------------
+  // Faint isophotes (d3-celestial contours via vendor/mwdata.js), ported from the
+  // SatObserver polar chart to the gnomonic frame. Two things need care:
+  //  1. The gnomonic radius diverges at 90° from the tangent point and the far
+  //     hemisphere has no image at all, so every vertex is clamped radially to an
+  //     off-screen rim (direction from centre preserved) — fills stay finite and
+  //     are exact inside the viewport.
+  //  2. Same fill-parity trap as the polar chart: when a ring's projected outline
+  //     wraps the chart, canvas fills the wrong side. The north galactic pole is a
+  //     point known to be OUTSIDE every isophote; any ring whose outline contains
+  //     its projection gets an extra rim-circle subpath to flip even-odd parity
+  //     back. (SatObserver's construction, different projection, same reasoning.)
+  // Documented deviation (CONTRACT): no twilight fade — the chart background never
+  // changes with the sun, so the layer draws at full contour alpha whenever on.
+  var MW_GP_RA = 192.859, MW_GP_DEC = 27.128; // north galactic pole (J2000)
+
+  function mwVecs(mw) {
+    return mw.levels.map(function (lev) {
+      return lev.rings.map(function (ring) {
+        var v = new Float64Array(ring.length * 3);
+        for (var i = 0; i < ring.length; i++) {
+          var ra = ring[i][0] * D2R, de = ring[i][1] * D2R, cd = Math.cos(de);
+          v[i * 3] = cd * Math.cos(ra);
+          v[i * 3 + 1] = cd * Math.sin(ra);
+          v[i * 3 + 2] = Math.sin(de);
+        }
+        return v;
+      });
+    });
+  }
+
+  function pointInPoly(px, py, pts) {
+    var inside = false;
+    for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      var yi = pts[i].y, yj = pts[j].y;
+      if ((yi > py) !== (yj > py) &&
+          px < (pts[j].x - pts[i].x) * (py - yi) / (yj - yi) + pts[i].x) inside = !inside;
+    }
+    return inside;
+  }
+
+  function drawMW(ra0, dec0, t) {
+    var mw = SAT.mwdata;
+    if (!mw || !cfg().mw) return;
+    if (!mw._vecs) mw._vecs = mwVecs(mw);
+    var ra = ra0 * D2R, de = dec0 * D2R;
+    // tangent-frame basis: boresight b, east e (b × pole plane), north n
+    var bx = Math.cos(ra) * Math.cos(de), by = Math.sin(ra) * Math.cos(de), bz = Math.sin(de);
+    var ex = -Math.sin(ra), ey = Math.cos(ra);                        // ez = 0
+    var nx = -Math.cos(ra) * Math.sin(de), ny = -Math.sin(ra) * Math.sin(de), nz = Math.cos(de);
+    var RIM = 2.5 * (cssW + cssH);           // px — beyond every visible pixel
+    var fMin = 0.02;                          // ~cos 88.9°: off-rim anyway
+    // equatorial unit vector -> chart point (clamped gnomonic; see header)
+    function pt(x, y, z) {
+      var f = x * bx + y * by + z * bz;
+      var u = x * ex + y * ey;               // ·east, sin-scaled
+      var v = x * nx + y * ny + z * nz;      // ·north
+      var p = (f > fMin)
+        ? skyToScreen(u / f * R2D, v / f * R2D, t)
+        : skyToScreen(u * 1e4, v * 1e4, t);  // horizon/far side: direction only
+      var dx = p.x - t.cx, dy = p.y - t.cy;
+      var d = Math.hypot(dx, dy);
+      if (d > RIM) { p.x = t.cx + dx / d * RIM; p.y = t.cy + dy / d * RIM; }
+      return p;
+    }
+    // long projected chords are subdivided along the great circle, so no edge can
+    // slash across the field on its way to the rim
+    var mc = 0.30 * Math.min(cssW, cssH);
+    var maxChord2 = mc * mc;
+    function subdiv(out, x0, y0, z0, p0, x1, y1, z1, p1, depth) {
+      var dx = p1.x - p0.x, dy = p1.y - p0.y;
+      if (depth > 0 && dx * dx + dy * dy > maxChord2) {
+        var xm = x0 + x1, ym = y0 + y1, zm = z0 + z1;
+        var n = Math.sqrt(xm * xm + ym * ym + zm * zm);
+        if (n > 1e-9) {
+          xm /= n; ym /= n; zm /= n;
+          var pm = pt(xm, ym, zm);
+          subdiv(out, x0, y0, z0, p0, xm, ym, zm, pm, depth - 1);
+          subdiv(out, xm, ym, zm, pm, x1, y1, z1, p1, depth - 1);
+          return;
+        }
+      }
+      out.push(p1);
+    }
+    var gd = MW_GP_DEC * D2R, gr = MW_GP_RA * D2R, gc = Math.cos(gd);
+    var gpP = pt(gc * Math.cos(gr), gc * Math.sin(gr), Math.sin(gd));
+    var RIMC = RIM * 1.2;
+    ctx.save();
+    // soften the isophote steps into a diffuse glow where the browser allows
+    var blur = typeof ctx.filter === 'string';
+    if (blur) ctx.filter = 'blur(' + (Math.min(cssW, cssH) * 0.01).toFixed(1) + 'px)';
+    for (var L = 0; L < mw.levels.length; L++) {
+      var lev = mw.levels[L];
+      ctx.beginPath();
+      for (var ri = 0; ri < lev.rings.length; ri++) {
+        var v = mw._vecs[L][ri];
+        var n = v.length / 3;
+        var p0 = pt(v[0], v[1], v[2]);
+        var pts = [p0];
+        for (var i = 1; i <= n; i++) {
+          var j = (i % n) * 3, k = ((i - 1) * 3);
+          var p1 = pt(v[j], v[j + 1], v[j + 2]);
+          subdiv(pts, v[k], v[k + 1], v[k + 2], p0, v[j], v[j + 1], v[j + 2], p1, 4);
+          p0 = p1;
+        }
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (var q = 1; q < pts.length; q++) ctx.lineTo(pts[q].x, pts[q].y);
+        ctx.closePath();
+        if (pointInPoly(gpP.x, gpP.y, pts)) {
+          ctx.moveTo(t.cx + RIMC, t.cy);
+          ctx.arc(t.cx, t.cy, RIMC, 0, Math.PI * 2);
+        }
+      }
+      ctx.fillStyle = 'rgba(172,192,222,' + lev.a + ')';
+      ctx.fill('evenodd');
+    }
+    if (blur) ctx.filter = 'none';
+    ctx.restore();
   }
 
   function drawFov(t) {
@@ -852,28 +998,78 @@
   }
 
   function drawSunMoon(ra0, dec0, t, date) {
+    if (!cfg().sunMoon) return null;
     var sun = null, moon = null, p;
     try { sun = SAT.frames.sunJ2000(date); } catch (e) { sun = null; }
     try { moon = SAT.frames.moonJ2000(date); } catch (e) { moon = null; }
-    ctx.font = '10px ' + MONO;
+
     if (sun) {
       p = proj(sun.raDeg, sun.decDeg, ra0, dec0, t);
       if (onScreen(p, 20)) {
+        // rayed disc, straight from the SatObserver chart
+        ctx.strokeStyle = '#ffd54f';
+        ctx.lineWidth = 1.5;
+        for (var k = 0; k < 8; k++) {
+          var a = k * Math.PI / 4;
+          ctx.beginPath();
+          ctx.moveTo(p.x + Math.cos(a) * 7, p.y + Math.sin(a) * 7);
+          ctx.lineTo(p.x + Math.cos(a) * 11, p.y + Math.sin(a) * 11);
+          ctx.stroke();
+        }
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,213,79,0.85)';
+        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffd54f';
         ctx.fill();
-        haloText('Sun', p.x + 10, p.y, '#ffd54f');
+        ctx.strokeStyle = 'rgba(60,40,0,0.6)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
       }
     }
+
     if (moon) {
-      p = proj(moon.raDeg, moon.decDeg, ra0, dec0, t);
-      if (onScreen(p, 20)) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(207,216,220,0.85)';
+      var q = proj(moon.raDeg, moon.decDeg, ra0, dec0, t);
+      if (onScreen(q, 20)) {
+        // geocentric sun–moon elongation -> phase; bright limb faces the sun.
+        // The sun can be over the tangent-plane horizon (unprojectable), so the
+        // limb direction comes from a waypoint 1° along the moon->sun great
+        // circle, which is always projectable next to an on-screen moon.
+        var R = 5.5, phi = 0, cosPsi = 0;
+        var mv = sun ? SAT.frames.raDecToVec(moon.raDeg, moon.decDeg) : null;
+        if (mv) {
+          var sv = SAT.frames.raDecToVec(sun.raDeg, sun.decDeg);
+          cosPsi = mv.x * sv.x + mv.y * sv.y + mv.z * sv.z;
+          var tx = sv.x - cosPsi * mv.x, ty = sv.y - cosPsi * mv.y, tz = sv.z - cosPsi * mv.z;
+          var tn = Math.hypot(tx, ty, tz);
+          if (tn > 1e-9) {
+            var wc = Math.cos(D2R), ws = Math.sin(D2R);
+            var wrd = SAT.frames.vecToRaDec({
+              x: mv.x * wc + tx / tn * ws,
+              y: mv.y * wc + ty / tn * ws,
+              z: mv.z * wc + tz / tn * ws,
+            });
+            var wp = proj(wrd.raDeg, wrd.decDeg, ra0, dec0, t);
+            if (wp) phi = Math.atan2(wp.y - q.y, wp.x - q.x);
+          }
+        }
+        ctx.save();
+        ctx.translate(q.x, q.y);
+        ctx.rotate(phi);                    // +x now points toward the sun
+        ctx.beginPath();                    // dark side
+        ctx.arc(0, 0, R, 0, Math.PI * 2);
+        ctx.fillStyle = '#3c4148';
         ctx.fill();
-        haloText('Moon', p.x + 9, p.y, '#cfd8dc');
+        ctx.beginPath();                    // lit side: sun-side semicircle …
+        ctx.arc(0, 0, R, -Math.PI / 2, Math.PI / 2, false);
+        // … closed by the terminator ellipse (toward the sun when crescent)
+        ctx.ellipse(0, 0, R * Math.abs(cosPsi), R, 0, Math.PI / 2, -Math.PI / 2, cosPsi > 0);
+        ctx.fillStyle = '#e6e2d6';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(0, 0, R, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(8,10,14,0.7)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
       }
     }
     return moon;
@@ -927,6 +1123,7 @@
     var t = transform();
     curScale = t.scale; curCx = t.cx; curCy = t.cy;
 
+    drawMW(ra0, dec0, t);
     if (cfg().grid) drawGrid(ra0, dec0, t);
     drawStars(ra0, dec0, t);
     var moon = drawSunMoon(ra0, dec0, t, date);
@@ -979,11 +1176,6 @@
     if (SAT.state.scan && SAT.state.scan.stale) foot.push('⚠ parameters changed — rescan');
     if (moon) {
       foot.push('moon ' + SAT.frames.sep(ra0, dec0, moon.raDeg, moon.decDeg).toFixed(0) + '° away');
-    }
-    if (SAT.stars && typeof SAT.stars.isDeep === 'function' && !SAT.stars.isDeep()) {
-      foot.push('bright stars only');
-    } else if (!SAT.stars) {
-      foot.push('no star catalogue');
     }
     elFoot.textContent = foot.join(' · ');
   }
@@ -1202,21 +1394,14 @@
       };
     }
     var bar = SAT.util.el('div', { class: 'chart-toolbar' }, [
-      tbtn('stars', '✶', 'stars', toggleLayer('stars')),
+      tbtn('sunMoon', '☉', 'sun & moon (moon shows phase)', toggleLayer('sunMoon')),
+      tbtn('stars', '✶', 'stars (bright catalogue, to mag 4.6)', toggleLayer('stars')),
+      tbtn('mw', 'MW', 'Milky Way glow', toggleLayer('mw')),
       tbtn('starNames', 'SN', 'star names (fields wider than 5°)', toggleLayer('starNames')),
       tbtn('constLines', 'CL', 'constellation lines (fields wider than 5°)', toggleLayer('constLines')),
+      tbtn('constNames', 'CN', 'constellation names (fields wider than 5°)', toggleLayer('constNames')),
       tbtn('grid', '#', 'RA/Dec grid', toggleLayer('grid')),
       tbtn('labels', 'Ab', 'satellite labels', toggleLayer('labels')),
-      tbtn('mag', 'm9', 'star magnitude limit', function () {
-        var c = cfg();
-        var steps = [4.5, 6, 7.5, 9, 11];
-        var i = steps.indexOf(c.magLimit);
-        c.magLimit = steps[(i + 1) % steps.length];
-        invalidateStars();
-        try { SAT.state.save(); } catch (e) { /* ignore */ }
-        updateToolbar();
-        requestRender();
-      }),
       tbtn(null, 'E⇄', 'mirror the chart east/west (odd number of reflections)', function () {
         // flipEW lives in obs, so this routes through setObs and marks the scan
         // stale. Conservative — a mirror changes no sky geometry — but setObs is the
@@ -1233,12 +1418,14 @@
   function updateToolbar() {
     var c = cfg();
     if (!toolBtns.stars) return;
+    toolBtns.sunMoon.classList.toggle('chart-on', !!c.sunMoon);
     toolBtns.stars.classList.toggle('chart-on', !!c.stars);
+    toolBtns.mw.classList.toggle('chart-on', !!c.mw);
     toolBtns.starNames.classList.toggle('chart-on', !!c.starNames);
     toolBtns.constLines.classList.toggle('chart-on', !!c.constLines);
+    toolBtns.constNames.classList.toggle('chart-on', !!c.constNames);
     toolBtns.grid.classList.toggle('chart-on', !!c.grid);
     toolBtns.labels.classList.toggle('chart-on', !!c.labels);
-    toolBtns.mag.textContent = 'm' + c.magLimit;
   }
 
   function init(bodyEl, win) {

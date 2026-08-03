@@ -608,6 +608,47 @@ needless churn under the cursor at the worst possible moment.
 Verified in Chrome: press pauses, Space resumes, menu-bar press pauses, the
 follow-on click is deduplicated (no double-toggle).
 
+### Round 11 (2026-08-04) — chart star background falls back to SatObserver
+
+User verdict on the deep-catalogue background (after two rounds of curve
+tuning): fall back to the SatObserver-MX logic outright. So the sky chart's
+star layer is now the bright catalogue (`SAT.stardata`, V ≤ 4.6) with
+SatObserver's radius/alpha law verbatim, and the chart gained the rest of that
+chart's background kit: a Milky Way isophote layer (`vendor/mwdata.js`, MW
+toggle, off by default), Sun/Moon on their own ☉ toggle (rayed sun disc, moon
+drawn with its phase terminator, bright limb facing the sun), and a CN
+constellation-names toggle. The m-limit button is gone — there is nothing to
+limit at mag 4.6. One documented deviation, per the user: NO twilight/daylight
+sky tint (and hence no MW twilight fade) — this chart is a J2000 field view,
+not a local-sky view, so the background stays dark.
+
+The deep Tycho-2/Gaia catalogue is NOT deleted: the All-Sky panel still cones
+into it, `stars.js` and its asset ship unchanged, and the chart still uses the
+bright-catalogue `named()`/`constellationLines()` helpers. A new harness check
+pins the fallback: the chart render must make **zero** `SAT.stars.cone` calls.
+
+Porting notes, the two things that actually needed thought:
+
+- **Gnomonic Milky Way.** The polar chart projects the whole sphere into a
+  disc; a TAN projection diverges at 90° and has no image of the far
+  hemisphere at all. Every contour vertex is therefore clamped radially to an
+  off-screen rim (direction from centre preserved, long chords subdivided
+  along the great circle), which keeps fills finite and exact inside the
+  viewport. The fill-parity trap is the same as SatObserver's and so is the
+  fix: any ring whose projected outline swallows the north galactic pole — a
+  point outside every isophote — gets a rim-circle subpath to flip even-odd
+  parity back.
+- **Moon bright limb without a projectable sun.** The sun can be over the
+  tangent-plane horizon while the moon is in the field, so the limb direction
+  comes from a waypoint 1° along the moon→sun great circle, which is always
+  projectable next to an on-screen moon.
+
+Verified live in Chrome (dev :8500): Cygnus 60°×45° shows the star cloud with
+the Great Rift; the same field at the north galactic pole is glow-free (parity
+correct); the waning-gibbous moon (~79% lit at the check epoch) renders with
+the bright limb toward the sun; ☉ off removes both icons and the footer's
+"moon N° away" note; toolbar reads ☉ ✶ MW SN CL CN # Ab E⇄ ⤢.
+
 ## 13. Running the checks
 
 ```sh
