@@ -91,24 +91,56 @@
 
   let ui = null; // {field, local, playBtn, rateBtns, editing}
 
+  // updateUI runs EVERY animation frame while the clock runs. Writing textContent
+  // unconditionally replaced text nodes at 60 Hz — wasted work, and needless DOM
+  // churn under the user's cursor exactly when they press a button. Write only
+  // on change.
+  function setText(el, s) { if (el.textContent !== s) el.textContent = s; }
+
   function updateUI() {
     // menu bar (always present)
     const mbClock = document.getElementById('mb-clock');
     const mbRate = document.getElementById('mb-rate');
-    if (mbClock) mbClock.textContent = SAT.util.fmtDate(getDate()) + ' UTC';
+    if (mbClock) setText(mbClock, SAT.util.fmtDate(getDate()) + ' UTC');
     if (mbRate) {
-      mbRate.textContent = running ? rate + '×' : '❚❚ paused';
+      setText(mbRate, running ? rate + '×' : '❚❚ paused');
       mbRate.classList.toggle('rt', running && rate === 1);
     }
     if (!ui) return;
     if (!ui.editing) {
-      ui.field.value = SAT.util.fmtDate(getDate());
+      const v = SAT.util.fmtDate(getDate());
+      if (ui.field.value !== v) ui.field.value = v;
       ui.field.style.color = running ? '' : 'var(--warn)'; // amber while paused
     }
-    ui.local.textContent = 'local ' + SAT.util.fmtDateLocal(getDate()) +
-      (running ? '' : '  ·  PAUSED');
-    ui.playBtn.textContent = running ? '❚❚ Pause' : '▶ Run';
+    setText(ui.local, 'local ' + SAT.util.fmtDateLocal(getDate()) +
+      (running ? '' : '  ·  PAUSED'));
+    setText(ui.playBtn, running ? '❚❚ Pause' : '▶ Run');
     ui.rateBtns.forEach(b => b.classList.toggle('on', +b.dataset.rate === rate));
+  }
+
+  /** A button that acts on POINTERDOWN, not click.
+   *
+   *  A click only lands if mousedown and mouseup resolve to the same element, so
+   *  any mid-press relayout — a window snapping to its stored geometry, DOM
+   *  churn under the cursor, a focus dance — makes the browser quietly dissolve
+   *  it. That is exactly the reported bug: Space always paused (global keydown,
+   *  no hit-testing) while the mouse sometimes did nothing. For instantaneous
+   *  clock controls, acting on the press is both immune to that whole class and
+   *  what the user means anyway. Keyboard activation of a focused control still
+   *  arrives as a bare click with no preceding pointerdown, so it stays live;
+   *  the timestamp guard keeps the pointer path from firing the handler twice. */
+  function pressAct(el, fn) {
+    let pressedAt = 0;
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      pressedAt = performance.now();
+      fn();
+    });
+    el.addEventListener('click', () => {
+      if (performance.now() - pressedAt < 800) return;   // already handled on press
+      fn();
+    });
+    return el;
   }
 
   function buildUI(body, win) {
@@ -141,20 +173,24 @@
       }
     });
 
-    const playBtn = U.el('button', { class: 'btn primary', onclick: () => setRunning(!running) }, '❚❚ Pause');
-    const nowBtn = U.el('button', { class: 'btn', title: 'Jump to real current time, rate 1×, running', onclick: () => syncNow() }, '⦿ Real time');
+    const playBtn = pressAct(
+      U.el('button', { class: 'btn primary' }, '❚❚ Pause'),
+      () => setRunning(!running));
+    const nowBtn = pressAct(
+      U.el('button', { class: 'btn', title: 'Jump to real current time, rate 1×, running' }, '⦿ Real time'),
+      () => syncNow());
 
     const rates = [-1000, -100, -10, -1, 1, 10, 100, 1000];
     const rateBtns = rates.map(r =>
-      U.el('button', {
-        class: 'btn small clk-rate-btn', 'data-rate': r,
-        onclick: () => { setRate(r); setRunning(true); },
-      }, (r > 0 ? '+' : '') + r + '×'));
+      pressAct(U.el('button', { class: 'btn small clk-rate-btn', 'data-rate': r },
+        (r > 0 ? '+' : '') + r + '×'),
+        () => { setRate(r); setRunning(true); }));
 
     const steps = [['−1d', -86400], ['−1h', -3600], ['−1m', -60], ['−10s', -10],
                    ['+10s', 10], ['+1m', 60], ['+1h', 3600], ['+1d', 86400]];
     const stepBtns = steps.map(([lbl, s]) =>
-      U.el('button', { class: 'btn small', onclick: () => setDate(new Date(getDate().getTime() + s * 1000)) }, lbl));
+      pressAct(U.el('button', { class: 'btn small' }, lbl),
+        () => setDate(new Date(getDate().getTime() + s * 1000))));
 
     body.appendChild(U.el('div', { class: 'pane' }, [
       field, local, hint,
@@ -176,7 +212,7 @@
     if (mbRate) {
       mbRate.style.cursor = 'pointer';
       mbRate.title = 'click to run / pause the simulation clock';
-      mbRate.addEventListener('click', () => setRunning(!running));
+      pressAct(mbRate, () => setRunning(!running));
     }
     emit(true);
   }

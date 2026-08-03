@@ -579,6 +579,35 @@ Build trap for future rounds: PyInstaller's `--clean` did NOT invalidate a
 a release build; verify with `/api/ping` on the bundled instance, which is the
 check that caught it.
 
+### Round 10 (2026-08-04) — "only Space can pause; the mouse does nothing"
+
+Could not reproduce in Chrome despite exhaustive probing: real clicks (fast and
+slow via a zero-distance drag), both toggle targets (the Clock window button
+and the menu-bar indicator), elementFromPoint sweeps over the whole panel (no
+transparent overlay), the user's own saved layout from the packaged app's
+Application Support (nothing overlaps the button; the menu bar is z-5000 and
+windows live below it in #desktop). The packaged WKWebView app could not be
+driven directly (no Screen Recording / Accessibility TCC grants for the shell).
+
+What the investigation DID establish: a `click` only lands if mousedown and
+mouseup resolve to the same element, so any mid-press disturbance — a window
+re-applying stored geometry (windows.js applies geo to every window on every
+`resize` event), DOM churn under the cursor, a focus dance — makes the browser
+dissolve it silently. One of this session's own probe clicks died exactly that
+way. Space never suffers: the global keydown does no hit-testing.
+
+Fix, immune to the whole class rather than chasing the one disturber we cannot
+observe inside WKWebView: clock controls now act on POINTERDOWN (`pressAct`
+helper — press fires the action; the click that follows within 800 ms is
+swallowed; a bare click with no preceding press, i.e. keyboard activation of a
+focused control, still works). Applied to Pause/Run, Real time, the rate and
+step chips, and the menu-bar indicator. Also stopped updateUI's 60 Hz
+unconditional textContent writes (now write-on-change) — wasted work, and
+needless churn under the cursor at the worst possible moment.
+
+Verified in Chrome: press pauses, Space resumes, menu-bar press pauses, the
+follow-on click is deduplicated (no double-toggle).
+
 ## 13. Running the checks
 
 ```sh
