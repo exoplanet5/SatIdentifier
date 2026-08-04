@@ -364,9 +364,17 @@ console.log('\n[3] sources.js — freshness banner and object counts');
     fresh.indexOf('Load full catalogue') < fresh.indexOf('McCants'));
   ok('names Space-Track as THE full-catalogue provider',
     /Space-Track full GP/.test(fresh));
-  ok('the CelesTrak tab is gone (round-1 review)', !/CelesTrak/.test(fresh));
-  ok('keeps the Space-Track / McCants / paste / cache tabs',
-    ['Space-Track', 'McCants', 'Paste TLE', 'Cache'].every(t => fresh.includes(t)));
+  // Round 13: CelesTrak is BACK, but as single-object queries only — the round-1
+  // objection was to GROUP subsets, and the group fetch stays gone.
+  const SRC = fs.readFileSync(path.join(APP, 'sources.js'), 'utf8');
+  ok('keeps the Space-Track / CelesTrak / McCants / paste / cache tabs',
+    ['Space-Track', 'CelesTrak', 'McCants', 'Paste TLE', 'Cache'].every(t => fresh.includes(t)));
+  ok('CelesTrak tab is object-query only — no group fetch',
+    /celestrak\/query/.test(SRC) && !/celestrak\/tle/.test(SRC));
+  ok('carries the full-SATCAT fetch row', fresh.includes('Fetch full SATCAT') &&
+    /satcat\/bulk\?status=1/.test(SRC) && /satcat\/bulk\?refresh=1&status=1/.test(SRC));
+  ok('query-value inputs are the narrow 130px (round 13)',
+    (SRC.match(/width:130px/g) || []).length >= 2);
   ok('statistics are per source', /✓ Space-Track/.test(fresh) &&
     /newest/.test(fresh) && /median/.test(fresh) && /oldest/.test(fresh),
     quote(fresh, 'Space-Track'));

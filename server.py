@@ -63,6 +63,9 @@ PORT_TRIES = 11  # 8476..8486
 
 # JSON (OMM) format: NORAD_CAT_ID is a full integer, unlike 5-char TLE fields
 CELESTRAK_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP={group}&FORMAT=json"
+CELESTRAK_CATNR_URL = "https://celestrak.org/NORAD/elements/gp.php?CATNR={norad}&FORMAT=json"
+CELESTRAK_INTDES_URL = "https://celestrak.org/NORAD/elements/gp.php?INTDES={intdes}&FORMAT=json"
+CELESTRAK_NAME_URL = "https://celestrak.org/NORAD/elements/gp.php?NAME={name}&FORMAT=json"
 SATCAT_URL = "https://celestrak.org/satcat/records.php?CATNR={norad}&FORMAT=JSON"
 SATCAT_BULK_URL = "https://celestrak.org/pub/satcat.csv"
 QSMAG_URL = "https://www.mmccants.org/programs/qsmag.zip"
@@ -483,6 +486,47 @@ def spacetrack_query_url(qtype, value):
     raise ApiError(400, f"Unknown query type: {qtype!r}")
 
 
+def celestrak_query_urls(qtype, value):
+    """CelesTrak single-object GP query -> (url list, piece filter, label).
+
+    Ported from SatObserver (round 13). gp.php answers one CATNR per request,
+    so a NORAD list becomes several URLs; INTDES only takes the yyyy-nnn launch
+    part, so a full COSPAR id keeps its piece letters as a post-filter on
+    OBJECT_ID.
+    """
+    v = value.strip()
+    if qtype == "norad":
+        parts = [s for s in re.split(r"[\s,]+", v) if s]
+        try:
+            ids = [str(int(s)) for s in parts]
+        except ValueError:
+            raise ApiError(400, "Invalid NORAD ID list (integers only)")
+        if not ids:
+            raise ApiError(400, "Empty NORAD ID list")
+        if len(ids) > 20:
+            raise ApiError(400, "CelesTrak answers one NORAD ID per request — "
+                                "20 max here; use Space-Track for large batches")
+        urls = [CELESTRAK_CATNR_URL.format(norad=i) for i in ids]
+        return urls, "", "catnr:" + ",".join(ids)
+    if qtype == "intldes":
+        u = v.upper()
+        m = re.match(r"^(\d{2})(\d{3})([A-Z]*)$", u)   # legacy TLE form 98067A
+        if m:
+            yy = int(m.group(1))
+            u = f"{1900 + yy if yy >= 57 else 2000 + yy}-{m.group(2)}{m.group(3)}"
+        m = re.match(r"^(\d{4}-\d{3})([A-Z]{0,3})$", u)
+        if not m:
+            raise ApiError(400, "INTDES must look like 1998-067A or 98067A")
+        url = CELESTRAK_INTDES_URL.format(intdes=m.group(1))
+        return [url], (u if m.group(2) else ""), "intdes:" + u
+    if qtype == "name":
+        if not v:
+            raise ApiError(400, "Empty name query")
+        url = CELESTRAK_NAME_URL.format(name=urllib.parse.quote(v, safe=""))
+        return [url], "", "name:" + v
+    raise ApiError(400, f"Unknown query type: {qtype!r}")
+
+
 # ---------------------------------------------------------------------------
 # Photometry lookup tables
 #
@@ -743,6 +787,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._respond(200, {"ok": True, "groups": groups})
             if path == "/api/celestrak/tle":
                 return self._celestrak_tle(qs)
+            if path == "/api/celestrak/query":
+                return self._celestrak_query(qs)
             if path == "/api/catalog/full":
                 return self._catalog_full(qs)
             if path == "/api/spacetrack/config":
@@ -834,6 +880,57 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not tles:
             raise ApiError(502, f"CelesTrak returned no elements for group {group!r}")
         payload = make_payload(f"celestrak:{group}", tles)
+        cache_write(key, payload)
+        self._respond(200, payload)
+
+    def _celestrak_query(self, qs):
+        """Single-object GP lookup on CelesTrak: CATNR / INTDES / NAME.
+
+        Ported from SatObserver with two adaptations: the result is ENRICHED
+        (its objects enter the scanning catalogue, so they need the same
+        rcs/type/stdMag joins as every other TLE endpoint) and carries
+        `cacheKey` so the frontend's catalogRefs re-hydration works.
+        """
+        qtype = qs.get("type", "")
+        value = qs.get("value") or ""
+        refresh = qs.get("refresh") == "1"
+        urls, piece, label = celestrak_query_urls(qtype, value)
+        key = "celestrak_q_" + hashlib.sha1(
+            ("|".join(urls) + "|" + piece).encode("utf-8")).hexdigest()[:12]
+        cached = cache_read(key)
+        if (cached and not refresh
+                and time.time() - cached.get("fetchedUnix", 0) < CACHE_FRESH_S):
+            return self._respond(200, cached)
+        records, errors = [], []
+        for url in urls:
+            try:
+                raw = http_get(url)
+            except urllib.error.HTTPError as e:
+                if e.code != 404:   # 404 is gp.php for "no data for this query"
+                    errors.append(str(e))
+                continue
+            except Exception as e:
+                errors.append(str(e))
+                continue
+            try:
+                arr = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue  # "No GP data found" plain-text reply
+            if isinstance(arr, list):
+                records.extend(arr)
+        if not records and errors:
+            if cached:  # network failure -> serve stale copy
+                return self._respond(200, {**cached, "stale": True})
+            raise ApiError(502, f"CelesTrak fetch failed: {errors[0]}")
+        if piece:  # INTDES queried the whole launch; narrow to the piece
+            records = [r for r in records
+                       if str(r.get("OBJECT_ID") or "").strip().upper() == piece]
+        tles = omm_records_to_tles(records)
+        if not tles:
+            raise ApiError(404, f"CelesTrak has no GP data matching {label}")
+        enrich_best_effort(tles)
+        payload = make_payload(f"celestrak:{label}", tles)
+        payload["cacheKey"] = key
         cache_write(key, payload)
         self._respond(200, payload)
 
@@ -1009,8 +1106,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._respond(200, {"ok": True, "record": record})
 
     def _satcat_bulk(self, qs):
-        """The whole SATCAT as one table — the source of `rcs`."""
-        self._respond(200, load_satcat_bulk(qs.get("refresh") == "1"))
+        """The whole SATCAT as one table — the source of `rcs`.
+
+        status=1 (round 13) returns a slim {present, count, fetched, stale}
+        probe instead of the multi-MB records table — the Catalogue window
+        polls it on open, and rendering a status line must never pay for (or
+        trigger) the 7 MB download. Alone it only PEEKS at the disk cache;
+        with refresh=1 it downloads first, which also warms the enrichment
+        join every TLE endpoint uses.
+        """
+        refresh = qs.get("refresh") == "1"
+        if qs.get("status") == "1":
+            d = load_satcat_bulk(refresh=True) if refresh else cache_read("satcat_bulk")
+            if not d:
+                return self._respond(200, {"ok": True, "present": False})
+            return self._respond(200, {
+                "ok": True, "present": True, "count": d.get("count"),
+                "fetched": d.get("fetched"), "stale": bool(d.get("stale")),
+            })
+        self._respond(200, load_satcat_bulk(refresh))
 
     def _qsmag(self, qs):
         """McCants standard magnitudes — the best photometry tier, optional."""

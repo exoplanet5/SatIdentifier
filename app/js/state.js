@@ -94,8 +94,9 @@
     };
   }
 
-  // The catalogue is a MERGED set from up to three sources, deduplicated by NORAD
-  // (newest TLE epoch wins). Each object carries src: 'spacetrack'|'mccants'|'paste'
+  // The catalogue is a MERGED set from up to four sources, deduplicated by NORAD
+  // (newest TLE epoch wins). Each object carries src:
+  // 'spacetrack'|'celestrak'|'mccants'|'paste'
   // so the Catalogue window can report epoch-age statistics per source — a single
   // "newest element" line over a merged set hides exactly the staleness that breaks
   // an identification. sources.* holds the refs needed to re-hydrate from the
@@ -107,7 +108,7 @@
     locations: [],
     catalog: {
       objs: [], count: 0, bad: 0,
-      sources: { spacetrack: [], mccants: [], paste: null },
+      sources: { spacetrack: [], celestrak: [], mccants: [], paste: null },
     },
     scan: { crossings: [], ranAt: null, stale: true, params: null, culled: null,
             checked: new Set() },   // ticked rows; views show only these when non-empty
@@ -115,7 +116,7 @@
   };
   SAT.state = state;
 
-  const SRC_TAGS = ['spacetrack', 'mccants', 'paste'];
+  const SRC_TAGS = ['spacetrack', 'celestrak', 'mccants', 'paste'];
   const MAX_REFS_PER_SRC = 8;     // rehydrate list cap; oldest refs fall off
   const MAX_PASTED = 2000;        // pasted sets persist inline — protect the 4 MB state cap
 
@@ -256,6 +257,7 @@
       }),
       catalogRefs: {
         spacetrack: state.catalog.sources.spacetrack,
+        celestrak: state.catalog.sources.celestrak,
         mccants: state.catalog.sources.mccants,
       },
       // Pasted TLEs have no server-side cache, so they persist inline. Capped:
@@ -458,7 +460,7 @@
     // A vanished cache entry is skipped silently — the Catalogue window shows
     // per-source counts, so an absence is visible there rather than fatal here.
     const refs = (saved && saved.catalogRefs) || {};
-    for (const tag of ['spacetrack', 'mccants']) {
+    for (const tag of ['spacetrack', 'celestrak', 'mccants']) {
       for (const ref of (Array.isArray(refs[tag]) ? refs[tag] : [])) {
         if (!ref || !ref.cacheKey) continue;
         try {

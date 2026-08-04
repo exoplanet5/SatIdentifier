@@ -679,6 +679,39 @@ SAT.stars.cone (comment-stripped source check), bright dots actually land on
 the dome, MW off draws nothing / on fills one path per isophote level, the
 rayed sun appears at noon, and star drawing has no daylight gating.
 
+### Round 13 (2026-08-04) — CelesTrak object queries + full SATCAT
+
+Requested from the SatObserver TLE Sources panel: CelesTrak queries by NORAD,
+COSPAR and name-contains, plus the full-SATCAT download, with a narrower
+query-value box. Ported with the round-1 rationale intact: the CelesTrak
+**group** fetch stays gone (a subset makes a negative identification
+meaningless) — the new tab is single-OBJECT queries only, which carry no such
+trap.
+
+- Backend: `/api/celestrak/query?type=norad|intldes|name&value=…` ported from
+  SatObserver (`celestrak_query_urls` — one CATNR request per NORAD id ≤ 20,
+  INTDES takes the yyyy-nnn launch with piece letters as a post-filter, NAME
+  substring) with two SatIdentifier adaptations: results are ENRICHED via
+  `enrich_best_effort` (they enter the scanning catalogue and need the same
+  rcs/type/stdMag joins as everything else) and carry `cacheKey` so reload
+  re-hydration works. `/api/satcat/bulk?status=1` added as a slim
+  `{present, count, fetched, stale}` probe — the status line must never pay
+  for (or trigger) the 7 MB download; with `refresh=1` it downloads first,
+  which also warms the enrichment join.
+- Frontend: new `celestrak` source tag end to end (SRC_TAGS, catalog.sources,
+  catalogRefs serialisation + re-hydration, per-source freshness line, cache
+  tag inference, ✕ clear). Query-value inputs shrunk to 130 px — the
+  Space-Track one included (was 220 px) — so selector + value + buttons fit
+  the default window width.
+
+Verified live against real CelesTrak: `25544, 48274` → 2 objects enriched
+(ISS type PAY rcs 399), `98067A` piece-filters the 1998-067 launch to ISS
+alone, `TIANHE` finds CSS, the merged header reads "Space-Track + CelesTrak"
+with a fresh ✓ CelesTrak line beside the stale Space-Track set, and a page
+reload re-hydrates the query set from `celestrak_q_*` via catalogRefs.
+test_ports [3] updated: tab list, object-query-only source check, SATCAT row,
+and the 130 px width pinned.
+
 ## 13. Running the checks
 
 ```sh

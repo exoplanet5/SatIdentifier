@@ -1,12 +1,14 @@
 /* SAT.ui.sources — where the object set comes from.
  *
- * The catalogue is a MERGED set from three sources — Space-Track (the full GP
- * catalogue plus one-off queries), McCants classified files, and pasted TLEs —
- * deduplicated by NORAD with the newest elements winning. Every action here goes
- * through state.addTles(tag, payload, {replace}), which also rebuilds every satrec
- * up front (see "Performance decisions" in CONTRACT.md). There is deliberately no
- * CelesTrak tab any more (round-1 review): a group subset invites "identify against
- * Starlink only", and a negative result from a subset means nothing.
+ * The catalogue is a MERGED set from four sources — Space-Track (the full GP
+ * catalogue plus one-off queries), CelesTrak single-object queries, McCants
+ * classified files, and pasted TLEs — deduplicated by NORAD with the newest
+ * elements winning. Every action here goes through state.addTles(tag, payload,
+ * {replace}), which also rebuilds every satrec up front (see "Performance
+ * decisions" in CONTRACT.md). There is deliberately no CelesTrak GROUP fetch
+ * (round-1 review): a group subset invites "identify against Starlink only", and
+ * a negative result from a subset means nothing. The round-13 CelesTrak tab is
+ * single-OBJECT queries only (NORAD / COSPAR / name), which carry no such trap.
  *
  * The per-source freshness block is the reason this window is worth opening. A
  * failed identification is far more often stale elements than a wrong pointing, and
@@ -24,7 +26,8 @@
   // "newest" at minutes while half the set is a week behind.
   const STALE_DAYS = 3;
 
-  const TAG_LABEL = { spacetrack: 'Space-Track', mccants: 'McCants', paste: 'Pasted' };
+  const TAG_LABEL = { spacetrack: 'Space-Track', celestrak: 'CelesTrak',
+                      mccants: 'McCants', paste: 'Pasted' };
 
   let headerHost = null;
 
@@ -95,7 +98,7 @@
     headerHost.appendChild(line);
 
     let anyStale = false;
-    for (const tag of ['spacetrack', 'mccants', 'paste']) {
+    for (const tag of ['spacetrack', 'celestrak', 'mccants', 'paste']) {
       const s = stats[tag];
       if (!s) continue;
       const stale = s.medianD > STALE_DAYS;
@@ -232,12 +235,12 @@
       U.el('div', { class: 'src-hint' },
         'Space-Track full GP (on-orbit, epoch < 30 d — includes the analyst and ' +
         'unnamed objects an unidentified trail usually turns out to be). Requires ' +
-        'credentials, saved in the Space-Track section below. McCants and pasted ' +
-        'TLEs merge into the same catalogue.'),
+        'credentials, saved in the Space-Track section below. CelesTrak queries, ' +
+        'McCants files and pasted TLEs merge into the same catalogue.'),
     ]));
 
     // ---------- tabs ----------
-    const tabs = ['Space-Track', 'McCants', 'Paste TLE', 'Cache'];
+    const tabs = ['Space-Track', 'CelesTrak', 'McCants', 'Paste TLE', 'Cache'];
     const panes = {};
     const tabBtns = {};
     const tabBar = U.el('div', { class: 'row', style: 'gap:2px;margin-bottom:8px;flex-wrap:wrap' });
@@ -277,7 +280,9 @@
         intldes: '2026-162A or 98067A (partial ok)',
         name: 'e.g. LACROSSE',
       };
-      const qVal = U.el('input', { class: 'input', placeholder: Q_HINT.norad, style: 'width:220px' });
+      // narrow on purpose (round 13): the row must fit selector + value + button
+      // in the default window width
+      const qVal = U.el('input', { class: 'input', placeholder: Q_HINT.norad, style: 'width:130px' });
       qType.addEventListener('change', () => {
         qVal.placeholder = Q_HINT[qType.value] || '';
       });
@@ -314,6 +319,78 @@
           'data/config.json and used by the Load full catalogue button above. Queries ' +
           'here merge into the catalogue without replacing it.'),
         status,
+      ]));
+    }
+
+    // ---------- CelesTrak ----------
+    // Object queries only — no group fetch (see the module header). Ported from
+    // SatObserver's TLE Sources panel, round 13.
+    {
+      const qType = U.el('select', { class: 'select' }, [
+        U.el('option', { value: 'norad' }, 'NORAD IDs'),
+        U.el('option', { value: 'intldes' }, 'INTLDES / COSPAR'),
+        U.el('option', { value: 'name' }, 'Name contains'),
+      ]);
+      const Q_HINT = {
+        norad: '25544, 48274, … (≤20)',
+        intldes: '1998-067A or 98067A',
+        name: 'e.g. TIANHE',
+      };
+      // narrow on purpose (round 13): the row must fit selector + value + buttons
+      const qVal = U.el('input', { class: 'input', placeholder: Q_HINT.norad, style: 'width:130px' });
+      qType.addEventListener('change', () => { qVal.placeholder = Q_HINT[qType.value] || ''; });
+      const status = U.el('div', { class: 'dim', style: 'margin-top:6px' }, '');
+      const goQ = async (refresh) => {
+        if (!qVal.value.trim() || qBtn.disabled) return;
+        busy(qBtn, status, 'Querying CelesTrak…');
+        qBtnR.disabled = true;
+        try {
+          const d = await api('/api/celestrak/query?type=' + qType.value +
+            '&value=' + encodeURIComponent(qVal.value.trim()) + (refresh ? '&refresh=1' : ''));
+          qBtn.disabled = false; qBtnR.disabled = false;
+          acceptPayload('celestrak', d, status, false);   // queries merge additively
+        } catch (e) { fail(qBtn, status, e); qBtnR.disabled = false; }
+      };
+      qVal.addEventListener('keydown', e => { if (e.key === 'Enter') goQ(false); });
+      const qBtn = U.el('button', { class: 'btn primary', onclick: () => goQ(false) }, 'Fetch');
+      const qBtnR = U.el('button', { class: 'btn', title: 'Bypass 2 h cache', onclick: () => goQ(true) }, '⟳');
+
+      // full SATCAT snapshot — metadata (rcs/type/owner/launch), not TLEs; the
+      // same satcat_bulk table that enriches every fetch and feeds the info panel
+      const scStatus = U.el('span', { class: 'dim', style: 'font-size:11px' }, '');
+      function scShow(d) {
+        scStatus.textContent = d.present
+          ? d.count.toLocaleString('en-US') + ' records on file · fetched ' +
+            (d.fetched || '').slice(0, 10) + (d.stale ? ' (stale — network failed)' : '')
+          : 'not downloaded yet — info panels look objects up one by one';
+      }
+      api('/api/satcat/bulk?status=1').then(scShow).catch(() => {});
+      const scBtn = U.el('button', {
+        class: 'btn small',
+        title: 'Download the complete CelesTrak satellite catalog (satcat.csv, ~7 MB) so ' +
+          'RCS/type photometry enrichment and launch/owner metadata work offline for ' +
+          'every cataloged object',
+        onclick: async () => {
+          scBtn.disabled = true;
+          scStatus.textContent = 'downloading satcat.csv…';
+          try { scShow(await api('/api/satcat/bulk?refresh=1&status=1')); }
+          catch (e) { scStatus.textContent = '✗ ' + (e && e.message ? e.message : e); }
+          scBtn.disabled = false;
+        },
+      }, 'Fetch full SATCAT');
+
+      panes['CelesTrak'].appendChild(U.el('div', null, [
+        U.el('div', { class: 'row' }, [U.el('span', { class: 'dim' }, 'Object'),
+          qType, qVal, qBtn, qBtnR, clearButton('celestrak', 'CelesTrak', status)]),
+        U.el('div', { class: 'src-hint' },
+          'Object queries hit gp.php directly: CATNR (one request per NORAD id), ' +
+          'INTDES (whole launch; a piece letter narrows it), NAME (substring). ' +
+          'No account needed; results merge into the catalogue without replacing it. ' +
+          'There is deliberately no group fetch — identifying against a subset ' +
+          'makes a negative result meaningless.'),
+        status,
+        U.el('div', { class: 'sep' }),
+        U.el('div', { class: 'row' }, [scBtn, scStatus]),
       ]));
     }
 
@@ -398,6 +475,7 @@
      *  statistics that are the whole point of the header. */
     function tagForCacheKey(key) {
       if (/^mccants_/.test(key)) return 'mccants';
+      if (/^celestrak_/.test(key)) return 'celestrak';
       if (/^spacetrack_/.test(key) || key === 'catalog_full') return 'spacetrack';
       return 'paste';
     }

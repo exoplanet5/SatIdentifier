@@ -955,10 +955,26 @@ Secondary window, closed by default. Expose: `SAT.allsky = { init, requestRender
 ### SAT.ui.sources.init / SAT.ui.locations.init / SAT.ui.satinfo.init
 
 Ported from SatObserver. `sources` loses the family concept AND (round-1 review)
-the CelesTrak tab: the catalogue is built from **Space-Track** (Load full catalogue,
-`replace:true`, plus one-off NORAD/name queries merged additively), **McCants**
-(files merged additively), and **Paste** (each paste merges additively; a clear
-button removes the pasted set). All loads go through `SAT.state.addTles`. The
+the CelesTrak **group** tab: a group subset invites "identify against Starlink
+only", and a negative result from a subset means nothing. Round 13 brings
+CelesTrak back as **single-object queries only** — no group fetch — which carry
+no such trap: a CelesTrak tab with NORAD IDs (≤ 20; gp.php answers one CATNR per
+request) / INTLDES–COSPAR (whole launch; a piece letter narrows it) / Name-contains
+queries via `GET /api/celestrak/query`, merged additively under the `celestrak`
+source tag (own ✕ clear button, own line in the freshness block, rehydrated via
+`catalogRefs` like Space-Track and McCants). The same tab carries a **Fetch full
+SATCAT** row: downloads `satcat.csv` into the `satcat_bulk` cache — the exact
+table that feeds the rcs/type photometry enrichment and the info panel — with an
+on-file status line (`/api/satcat/bulk?status=1`, a slim probe that must never
+trigger the 7 MB download by itself). Query-value inputs are deliberately narrow
+(130 px): the row has to fit type selector, value, and buttons in the default
+window width.
+
+The catalogue is thus built from **Space-Track** (Load full catalogue,
+`replace:true`, plus one-off NORAD/name queries merged additively), **CelesTrak
+object queries**, **McCants** (files merged additively), and **Paste** (each paste
+merges additively; a clear button removes the pasted set). All loads go through
+`SAT.state.addTles`. The
 freshness display shows **epoch-age statistics per source** — count, newest, median,
 oldest vs the sim clock, from `SAT.state.sourceStats()` — with the >3 d warning per
 source, since a single merged "newest" line hides exactly the staleness that breaks
@@ -991,6 +1007,13 @@ Ported endpoints, unchanged in behaviour:
 - `POST /api/mccants/tle`, `POST /api/text/tle`
 - `GET|DELETE /api/cache[/<key>]`, `GET|PUT /api/state`
 - `GET /api/satcat?norad=N`
+- `GET /api/celestrak/query?type=norad|intldes|name&value=…[&refresh=1]` (round 13,
+  ported from SatObserver's `celestrak_query_urls` + `_celestrak_query`): gp.php
+  single-object lookups — one CATNR request per NORAD id (≤ 20), INTDES takes the
+  yyyy-nnn launch with piece letters as a post-filter on OBJECT_ID, NAME is a
+  substring. Two SatIdentifier adaptations: the result is **enriched** via
+  `enrich_best_effort` (its objects enter the scanning catalogue) and carries
+  `cacheKey` (`celestrak_q_<sha1[:12]>`) so `catalogRefs` re-hydration works.
 
 New or changed:
 
@@ -1025,7 +1048,11 @@ launches and analyst objects are exactly the unidentified trails people are chas
 - `GET /api/satcat/bulk[?refresh=1]` — the whole CelesTrak SATCAT
   (`https://celestrak.org/pub/satcat.csv`), parsed to `{norad: {intl, rcs, name,
   launch, owner, opStatus}}`. Cached 30 d as `satcat_bulk.json`. This is what
-  supplies `rcs` for the photometry fallback.
+  supplies `rcs` for the photometry fallback. Round 13 adds `?status=1`: a slim
+  `{present, count, fetched, stale}` probe for the Catalogue window's status line —
+  alone it only PEEKS at the disk cache (never triggers the 7 MB download);
+  combined with `refresh=1` it downloads first, which also warms the enrichment
+  join every TLE endpoint uses.
 - `GET /api/qsmag[?refresh=1]` — McCants standard magnitudes
   (`https://www.mmccants.org/programs/qsmag.zip`), extracted in memory and parsed to
   `{norad: stdMag}`. Cached 30 d as `qsmag.json`. Missing file ⇒ `{ok:true, mags:{}}`

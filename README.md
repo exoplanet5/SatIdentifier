@@ -66,10 +66,12 @@ In dev mode data lives in `./data/`.
 ## Workflow
 
 1. **Catalogue** — press *Load full catalogue* (Space-Track full GP; a free account
-   is required and saved locally). Add McCants classified elements or paste TLEs —
-   everything merges into one catalogue, deduplicated by NORAD with the newest
-   elements winning, and **epoch-age statistics are shown per source**, because
-   stale elements are the main cause of a failed identification.
+   is required and saved locally). Add CelesTrak single-object queries (NORAD /
+   COSPAR / name-contains, no account needed — the same tab also downloads the full
+   SATCAT metadata table), McCants classified elements, or paste TLEs — everything
+   merges into one catalogue, deduplicated by NORAD with the newest elements
+   winning, and **epoch-age statistics are shown per source**, because stale
+   elements are the main cause of a failed identification.
 2. **Sites** — add your observing site and mark it active. Two kinds: **Ground**
    (lat / lon / alt) or **Orbit** (an observing satellite, picked from the loaded
    catalogue by NORAD number or name — the TLE is resolved live from the
