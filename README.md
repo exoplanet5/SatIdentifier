@@ -13,6 +13,8 @@ The site itself can be a **satellite** (space-based SSA): pick any object in the
 loaded catalogue by NORAD number and the scan runs from *its* sensor — who crosses
 my field, seen from orbit.
 
+![SatIdentifier — sky chart with predicted trails, all-sky context view, crossings table and satellite info](docs/screenshot.png)
+
 Local Python backend (catalogue fetching, caching, persistence — standard library
 only) + browser frontend (SGP4 in Web Workers, canvas chart). Companion to
 [SatObserver-MX](../satobserver), sharing its architecture and its house style.
@@ -195,6 +197,7 @@ app/
 tools/
   make_starcat.py          builds the star catalogue asset (dev only)
   test_*.js                verification harnesses — see DEVLOG
+docs/                      screenshot
 data/                      state, caches, credentials (gitignored)
 ```
 
