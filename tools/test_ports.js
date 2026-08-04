@@ -241,6 +241,10 @@ global.fetch = (url, opts) => {
 
 global.satellite = require(path.join(APP, 'vendor', 'satellite.min.js'));
 global.SAT = { ui: {} };
+// real catalogue data: since round 12 allsky's star field IS the bright catalogue
+// (SAT.stardata), and its Milky Way layer reads SAT.mwdata
+require(path.join(APP, 'vendor', 'starcat.js'));
+require(path.join(APP, 'vendor', 'mwdata.js'));
 
 // ---------------------------------------------------------------- load modules
 const ORDER = ['util', 'frames', 'windows', 'clock', 'propagate', 'state',
@@ -575,6 +579,51 @@ function winding(pts) {
   ok('5d  crossing track drawn in the LEO class colour', leo.length > 0,
     leo.length + ' segments');
   SAT.state.scan.crossings = [];
+}
+
+// ---- 5e: round 12 — the star field is the bright catalogue, plus MW & sun/moon --
+{
+  ok('5e  never queries the deep catalogue (bright-only fallback)',
+    !/SAT\.stars\.cone/.test(stripComments(ALLSKY_SRC)) && /SAT\.stardata/.test(ALLSKY_SRC));
+  ok('5e  carries the MW and sun/moon layers', /drawMW/.test(ALLSKY_SRC) &&
+    /SAT\.mwdata/.test(ALLSKY_SRC) && /sunMoon/.test(ALLSKY_SRC));
+
+  // bright stars actually drawn: at T0 (22:00 UT, Greenwich) the sky is up
+  SAT.state.settings.allsky.stars = true;
+  askCtx._rec.fills.length = 0;
+  SAT.allsky.requestRender();
+  flushRaf();
+  let starFills = askCtx._rec.fills.filter(s => String(s.style).startsWith('rgba(225,235,255'));
+  ok('5e  bright-catalogue stars drawn on the dome', starFills.length > 100,
+    starFills.length + ' star dots');
+
+  // the MW layer fills its isophote levels when toggled on, and not before
+  const mwStyle = s => String(s.style).startsWith('rgba(172,192,222');
+  ok('5e  MW off by default -> no isophote fills',
+    askCtx._rec.fills.filter(mwStyle).length === 0);
+  SAT.state.settings.allsky.mw = true;
+  askCtx._rec.fills.length = 0;
+  SAT.allsky.requestRender();
+  flushRaf();
+  const mwFills = askCtx._rec.fills.filter(mwStyle);
+  ok('5e  MW on -> one fill per isophote level', mwFills.length === SAT.mwdata.levels.length,
+    mwFills.length + ' of ' + SAT.mwdata.levels.length);
+  SAT.state.settings.allsky.mw = false;
+
+  // sun icon: jump the clock to local noon so the sun is up, then restore
+  SAT.clock.setDate(new Date('2026-07-21T12:00:00Z'));
+  askCtx._rec.strokes.length = 0;
+  askCtx._rec.fills.length = 0;
+  SAT.allsky.requestRender();
+  flushRaf();
+  const rays = askCtx._rec.strokes.filter(s => s.style === '#ffd54f');
+  ok('5e  rayed sun disc above the horizon at noon', rays.length >= 8,
+    rays.length + ' sun strokes');
+  starFills = askCtx._rec.fills.filter(s => String(s.style).startsWith('rgba(225,235,255'));
+  ok('5e  star layer has no twilight/daylight gating (no sky tint either)',
+    starFills.length > 100 && !/skyBg|sunAlt/.test(ALLSKY_SRC),
+    starFills.length + ' star dots at noon');
+  SAT.clock.setDate(T0);
 }
 
 // ---------------------------------------------------------------- [6] locations.js

@@ -319,13 +319,15 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
 
   global.SAT.bus = { on: () => {}, off: () => {}, emit: () => {} };
   global.SAT.clock = { getDate: () => new Date(T0) };
-  // Round 11: star dots come from SAT.stardata (loaded above, real data). The deep
-  // catalogue must never be queried by the chart — cone() records any call so the
-  // fallback cannot silently regress. named/lines still come through SAT.stars.
-  let coneCalls = 0;
   global.SAT.stars = {
     isDeep: () => true,
-    cone: () => { coneCalls++; return []; },
+    cone: (ra, dec, r) => {
+      const out = [];
+      for (let k = 0; k < 400; k++) {
+        out.push({ raDeg: ra + (k % 20 - 10) * r / 12, decDeg: dec + (Math.floor(k / 20) - 10) * r / 12, mag: 3 + (k % 7) });
+      }
+      return out;
+    },
     named: (ra, dec) => [{ raDeg: ra + 0.2, decDeg: dec + 0.1, name: 'Alnitak' }],
     constellationLines: (ra, dec) => [[
       { raDeg: ra - 1, decDeg: dec - 1 }, { raDeg: ra, decDeg: dec },
@@ -358,10 +360,8 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
     C.init(body, { isOpen: () => true });
   } catch (e) { threw = e; }
   ok('init() completes', !threw, threw ? String(threw && threw.stack).split('\n')[0] : '');
-  // the bright catalogue puts only a handful of stars in the default 1.5° field
-  // (ι Ori and friends) — the wide-field variants below exercise the dense case
   ok('render drew stars, tracks and text',
-    calls.arc >= 3 && calls.stroke > 50 && calls.fillText > 10,
+    calls.arc > 100 && calls.stroke > 50 && calls.fillText > 10,
     `arc ${calls.arc}, stroke ${calls.stroke}, fillText ${calls.fillText}, fill ${calls.fill}`);
   ok('HiDPI transform applied', calls.setTransform >= 1);
 
@@ -403,13 +403,13 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
   Object.assign(SAT.state.obs, base, { fovWDeg: 30, fovHDeg: 20 });
   Object.assign(SAT.state.settings.chart, {
     stars: true, starNames: true, constLines: true, constNames: true,
-    sunMoon: true, mw: true, grid: true, labels: true,
+    sunMoon: true, mw: true, grid: true, labels: true, magLimit: 9,
   });
   let w1 = warnings, d1 = drawn(), a1 = calls.arc || 0;
   C.requestRender();
   ok('all layers enabled (incl. MW + CN)', warnings === w1 && drawn() - d1 > 60,
     `${drawn() - d1} draw ops`);
-  ok('wide field draws a dense bright-star layer', (calls.arc || 0) - a1 > 30,
+  ok('wide field draws a dense star layer', (calls.arc || 0) - a1 > 30,
     `${(calls.arc || 0) - a1} arcs`);
 
   // Point at the Sun so the Sun and Moon marker branches actually draw. Their
@@ -444,12 +444,9 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
   delete global.SAT.stars;
   w0 = warnings; d0 = drawn();
   C.requestRender();
-  ok('missing SAT.stars -> star dots survive, no throw',
+  ok('missing SAT.stars -> no stars, no throw',
     warnings === w0 && drawn() - d0 > 60, `${drawn() - d0} draw ops`);
   global.SAT.stars = savedStars;
-
-  ok('chart never queried the deep catalogue', coneCalls === 0,
-    `${coneCalls} cone() calls`);
 
   console.warn = warn;
 }

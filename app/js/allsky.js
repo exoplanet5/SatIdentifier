@@ -42,8 +42,8 @@
   var warned = false;
   var elHud = null, elFoot = null;
   var markerHits = [];                        // [{id, x, y}]
-  var starCache = { key: '', raZ: 0, decZ: 0, list: [] };
   var toolBtns = {};
+  var D2R = Math.PI / 180, R2D = 180 / Math.PI;
 
   function cfg() {
     var s = SAT.state.settings;
@@ -52,10 +52,8 @@
     if (c.eastLeft == null) c.eastLeft = true;
     if (c.elStep == null) c.elStep = 30;
     if (c.stars == null) c.stars = true;
-    // The deep catalogue holds 130k stars to V = 9; a hemisphere of those is 65k
-    // points converted per frame, and an all-sky plot cannot resolve them anyway.
-    // This view therefore carries its own, much brighter, limit.
-    if (c.magLimit == null) c.magLimit = 5.5;
+    if (c.sunMoon == null) c.sunMoon = true;
+    if (c.mw == null) c.mw = false;           // Milky Way layer, off by default
     if (c.tracks == null) c.tracks = true;
     if (c.starNames == null) c.starNames = false;
     if (c.constLines == null) c.constLines = false;
@@ -211,39 +209,22 @@
   }
 
   // ---- star field ----------------------------------------------------------
-
-  /** Stars above the horizon, cached on the zenith position.
-   *
-   * The cone is 90 deg wide, so a degree of zenith drift changes the answer by a
-   * sliver — but the query itself walks a 130k-entry catalogue, and at a 1000x clock
-   * rate this runs every frame. Re-query only when the zenith has really moved.
-   */
-  function starList(loc, date) {
-    var c = cfg();
-    var z = SAT.frames.altAzToRaDec(0, 90, loc, date, { refract: false });
-    var key = c.magLimit + '|' + loc.latDeg + ',' + loc.lonDeg + '|' +
-      ((SAT.stars && SAT.stars.count) ? SAT.stars.count() : 0);
-    if (starCache.key === key &&
-        SAT.frames.sep(z.raDeg, z.decDeg, starCache.raZ, starCache.decZ) < 1.5) {
-      return starCache.list;
-    }
-    var list = [];
-    try {
-      list = SAT.stars ? SAT.stars.cone(z.raDeg, z.decDeg, 92, c.magLimit) : [];
-    } catch (e) { list = []; }
-    starCache = { key: key, raZ: z.raDeg, decZ: z.decDeg, list: list };
-    return list;
-  }
+  // Round 12: SatObserver fallback, binding (CONTRACT, All-Sky section). The star
+  // field is the bright catalogue SAT.stardata ONLY (V <= 4.6, ~1000 stars) drawn
+  // whole-hemisphere with SatObserver's radius/alpha law — SAT.stars.cone and the
+  // old allsky.magLimit are gone. ~500 frames conversions per render is sub-ms,
+  // which is exactly the sum SatObserver pays, so no cache is needed either.
 
   function drawStars(m, loc, date) {
-    var list = starList(loc, date), i, a, p, st;
-    for (i = 0; i < list.length; i++) {
-      st = list[i];
-      a = altAz(st.raDeg, st.decDeg, loc, date);
+    var sd = SAT.stardata;
+    if (!sd || !sd.stars) return;
+    for (var i = 0; i < sd.stars.length; i++) {
+      var st = sd.stars[i];                    // [raDeg(-180..180), decDeg, mag]
+      var a = altAz(((st[0] % 360) + 360) % 360, st[1], loc, date);
       if (a.elDeg <= 0.3) continue;
-      p = project(a.azDeg, a.elDeg, m);
-      var rad = Math.max(0.6, 2.7 - 0.45 * st.mag);
-      var alpha = Math.max(0.25, 0.95 - 0.13 * st.mag);
+      var p = project(a.azDeg, a.elDeg, m);
+      var rad = Math.max(0.6, 2.7 - 0.45 * st[2]);
+      var alpha = Math.max(0.25, 0.95 - 0.13 * st[2]);
       ctx.beginPath();
       ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(225,235,255,' + alpha.toFixed(2) + ')';
@@ -306,27 +287,202 @@
     ctx.textAlign = 'left';
   }
 
-  // ---- Sun and Moon --------------------------------------------------------
+  // ---- Milky Way -----------------------------------------------------------
+  // Faint isophotes (d3-celestial contours via vendor/mwdata.js), SatObserver's
+  // polar-chart layer with one change: the per-vertex J2000 -> horizontal
+  // conversion goes through a rotation matrix built ONCE per render from three
+  // SAT.frames.raDecToAltAz probes, so the glow shares the star layer's
+  // precession/nutation chain instead of re-deriving hour angles inline.
+  // SatObserver's fill-parity fix carries over unchanged: the polar projection
+  // maps the nadir to twice the horizon radius, so canvas fills the side of each
+  // ring NOT containing the nadir; whenever the nadir drifts inside a contour the
+  // fill inverts — a rim-circle subpath flips even-odd parity back, keyed on the
+  // north galactic pole, a point known to be outside every isophote.
+  // Documented deviation (CONTRACT): no twilight fade — full contour alpha
+  // whenever the layer is on.
+  var MW_GP_RA = 192.859, MW_GP_DEC = 27.128; // north galactic pole (J2000)
 
-  function drawBody(m, aa, r, fill, label) {
-    if (aa.elDeg <= -2) return;
-    var p = project(aa.azDeg, aa.elDeg, m);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(8,10,14,0.9)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.font = '10px ' + MONO;
-    haloText(label, p.x + r + 4, p.y, fill);
+  function mwVecs(mw) {
+    return mw.levels.map(function (lev) {
+      return lev.rings.map(function (ring) {
+        var v = new Float64Array(ring.length * 3);
+        for (var i = 0; i < ring.length; i++) {
+          var ra = ring[i][0] * D2R, de = ring[i][1] * D2R, cd = Math.cos(de);
+          v[i * 3] = cd * Math.cos(ra);
+          v[i * 3 + 1] = cd * Math.sin(ra);
+          v[i * 3 + 2] = Math.sin(de);
+        }
+        return v;
+      });
+    });
   }
 
+  /** Rows of the J2000 -> horizontal (N, E, up) rotation at this site and time. */
+  function horizMatrix(loc, date) {
+    var o = { refract: false, dut1S: SAT.state.obs.dut1S };
+    function hvec(raDeg, decDeg) {
+      var a = SAT.frames.raDecToAltAz(raDeg, decDeg, loc, date, o);
+      var el = a.elDeg * D2R, az = a.azDeg * D2R, ce = Math.cos(el);
+      return [ce * Math.cos(az), ce * Math.sin(az), Math.sin(el)];
+    }
+    var X = hvec(0, 0), Y = hvec(90, 0), Z = hvec(0, 90);   // images of x̂, ŷ, ẑ
+    return [
+      [X[0], Y[0], Z[0]],
+      [X[1], Y[1], Z[1]],
+      [X[2], Y[2], Z[2]],
+    ];
+  }
+
+  function pointInPoly(px, py, pts) {
+    var inside = false;
+    for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      var yi = pts[i].y, yj = pts[j].y;
+      if ((yi > py) !== (yj > py) &&
+          px < (pts[j].x - pts[i].x) * (py - yi) / (yj - yi) + pts[i].x) inside = !inside;
+    }
+    return inside;
+  }
+
+  function drawMW(m, loc, date) {
+    var mw = SAT.mwdata;
+    if (!mw || !cfg().mw) return;
+    if (!mw._vecs) mw._vecs = mwVecs(mw);
+    var R = horizMatrix(loc, date);
+    var sx = cfg().eastLeft ? -1 : 1;
+    // equatorial unit vector -> chart point (same mapping as project(), without
+    // the elevation clamp: below-horizon parts must land outside the clipped
+    // horizon circle, nadir at 2R)
+    function pt(x, y, z) {
+      var hn = R[0][0] * x + R[0][1] * y + R[0][2] * z;
+      var he = R[1][0] * x + R[1][1] * y + R[1][2] * z;
+      var hu = R[2][0] * x + R[2][1] * y + R[2][2] * z;
+      var alt = Math.asin(Math.max(-1, Math.min(1, hu)));
+      var az = Math.atan2(he, hn);
+      var r = (90 - alt * R2D) / 90 * m.R;
+      return { x: m.cx + sx * r * Math.sin(az), y: m.cy - r * Math.cos(az) };
+    }
+    // edges get grossly distorted near the nadir singularity; subdivide long
+    // projected chords along the great circle so none can slash across the disc
+    var maxChord2 = (0.25 * m.R) * (0.25 * m.R);
+    function subdiv(out, x0, y0, z0, p0, x1, y1, z1, p1, depth) {
+      var dx = p1.x - p0.x, dy = p1.y - p0.y;
+      if (depth > 0 && dx * dx + dy * dy > maxChord2) {
+        var xm = x0 + x1, ym = y0 + y1, zm = z0 + z1;
+        var n = Math.sqrt(xm * xm + ym * ym + zm * zm);
+        if (n > 1e-9) {
+          xm /= n; ym /= n; zm /= n;
+          var pm = pt(xm, ym, zm);
+          subdiv(out, x0, y0, z0, p0, xm, ym, zm, pm, depth - 1);
+          subdiv(out, xm, ym, zm, pm, x1, y1, z1, p1, depth - 1);
+          return;
+        }
+      }
+      out.push(p1);
+    }
+    var gd = MW_GP_DEC * D2R, gr = MW_GP_RA * D2R, gc = Math.cos(gd);
+    var gpP = pt(gc * Math.cos(gr), gc * Math.sin(gr), Math.sin(gd));
+    var RIM = m.R * 2.2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(m.cx, m.cy, m.R, 0, Math.PI * 2);
+    ctx.clip();
+    // soften the isophote steps into a diffuse glow where the browser allows
+    var blur = typeof ctx.filter === 'string';
+    if (blur) ctx.filter = 'blur(' + (m.R * 0.01).toFixed(1) + 'px)';
+    for (var L = 0; L < mw.levels.length; L++) {
+      var lev = mw.levels[L];
+      ctx.beginPath();
+      for (var ri = 0; ri < lev.rings.length; ri++) {
+        var v = mw._vecs[L][ri];
+        var n = v.length / 3;
+        var p0 = pt(v[0], v[1], v[2]);
+        var pts = [p0];
+        for (var i = 1; i <= n; i++) {
+          var j = (i % n) * 3, k = ((i - 1) * 3);
+          var p1 = pt(v[j], v[j + 1], v[j + 2]);
+          subdiv(pts, v[k], v[k + 1], v[k + 2], p0, v[j], v[j + 1], v[j + 2], p1, 4);
+          p0 = p1;
+        }
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (var q = 1; q < pts.length; q++) ctx.lineTo(pts[q].x, pts[q].y);
+        ctx.closePath();
+        if (pointInPoly(gpP.x, gpP.y, pts)) {
+          ctx.moveTo(m.cx + RIM, m.cy);
+          ctx.arc(m.cx, m.cy, RIM, 0, Math.PI * 2);
+        }
+      }
+      ctx.fillStyle = 'rgba(172,192,222,' + lev.a + ')';
+      ctx.fill('evenodd');
+    }
+    if (blur) ctx.filter = 'none';
+    ctx.restore();
+  }
+
+  // ---- Sun and Moon --------------------------------------------------------
+  // SatObserver's icons (round 12): rayed sun disc, moon with its phase
+  // terminator, drawn only above the horizon. Positions still come from
+  // SAT.frames (not subpoints) so they agree with the rest of this view.
+
   function drawSunMoon(m, loc, date) {
-    var s = SAT.frames.sunJ2000(date);
-    var mo = SAT.frames.moonJ2000(date);
-    drawBody(m, altAz(s.raDeg, s.decDeg, loc, date), 6, 'rgba(255,214,102,0.95)', 'Sun');
-    drawBody(m, altAz(mo.raDeg, mo.decDeg, loc, date), 5, 'rgba(220,226,235,0.95)', 'Moon');
+    if (!cfg().sunMoon) return;
+    var s, mo;
+    try { s = SAT.frames.sunJ2000(date); mo = SAT.frames.moonJ2000(date); }
+    catch (e) { return; }
+    var sun = altAz(s.raDeg, s.decDeg, loc, date);
+    var moon = altAz(mo.raDeg, mo.decDeg, loc, date);
+    moon.elDeg -= 0.95 * Math.cos(moon.elDeg * D2R); // lunar parallax (mean 57')
+
+    if (sun.elDeg > 0) {
+      var p = project(sun.azDeg, sun.elDeg, m);
+      ctx.strokeStyle = '#ffd54f';
+      ctx.lineWidth = 1.5;
+      for (var k = 0; k < 8; k++) {
+        var a = k * Math.PI / 4;
+        ctx.beginPath();
+        ctx.moveTo(p.x + Math.cos(a) * 7, p.y + Math.sin(a) * 7);
+        ctx.lineTo(p.x + Math.cos(a) * 11, p.y + Math.sin(a) * 11);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffd54f';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(60,40,0,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    if (moon.elDeg > 0) {
+      var q = project(moon.azDeg, moon.elDeg, m);
+      // geocentric sun–moon elongation -> phase; bright limb faces the sun's
+      // chart position (valid below the horizon too: project() clamps el,
+      // keeping the azimuth direction)
+      var mv = SAT.frames.raDecToVec(mo.raDeg, mo.decDeg);
+      var sv = SAT.frames.raDecToVec(s.raDeg, s.decDeg);
+      var cosPsi = mv.x * sv.x + mv.y * sv.y + mv.z * sv.z;
+      var ps = project(sun.azDeg, sun.elDeg, m);
+      var phi = Math.atan2(ps.y - q.y, ps.x - q.x);
+      var R = 5.5;
+      ctx.save();
+      ctx.translate(q.x, q.y);
+      ctx.rotate(phi);                    // +x now points toward the sun
+      ctx.beginPath();                    // dark side
+      ctx.arc(0, 0, R, 0, Math.PI * 2);
+      ctx.fillStyle = '#3c4148';
+      ctx.fill();
+      ctx.beginPath();                    // lit side: sun-side semicircle …
+      ctx.arc(0, 0, R, -Math.PI / 2, Math.PI / 2, false);
+      // … closed by the terminator ellipse (toward the sun when crescent)
+      ctx.ellipse(0, 0, R * Math.abs(cosPsi), R, 0, Math.PI / 2, -Math.PI / 2, cosPsi > 0);
+      ctx.fillStyle = '#e6e2d6';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, 0, R, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(8,10,14,0.7)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // ---- FOV footprint -------------------------------------------------------
@@ -492,6 +648,7 @@
       return;
     }
 
+    try { drawMW(m, loc, date); } catch (e) { /* optional layer */ }
     drawGrid(m);
     try {
       var cl = cfg();
@@ -618,7 +775,9 @@
     function updateToolbar() {
       var c = cfg();
       toolBtns.grid.textContent = c.elStep + '°';
+      toolBtns.sunMoon.classList.toggle('ask-on', !!c.sunMoon);
       toolBtns.stars.classList.toggle('ask-on', !!c.stars);
+      toolBtns.mw.classList.toggle('ask-on', !!c.mw);
       toolBtns.starNames.classList.toggle('ask-on', !!c.starNames);
       toolBtns.constLines.classList.toggle('ask-on', !!c.constLines);
       toolBtns.constNames.classList.toggle('ask-on', !!c.constNames);
@@ -641,7 +800,9 @@
         updateToolbar();
         requestRender();
       }),
-      tbtn('stars', '✶', 'star field', toggleLayer('stars')),
+      tbtn('sunMoon', '☉', 'sun & moon (moon shows phase)', toggleLayer('sunMoon')),
+      tbtn('stars', '✶', 'stars (to mag 4.6)', toggleLayer('stars')),
+      tbtn('mw', 'MW', 'Milky Way glow', toggleLayer('mw')),
       tbtn('starNames', 'SN', 'bright star names', toggleLayer('starNames')),
       tbtn('constLines', 'CL', 'constellation lines', toggleLayer('constLines')),
       tbtn('constNames', 'CN', 'constellation names', toggleLayer('constNames')),
@@ -701,12 +862,8 @@
     SAT.bus.on('filters-changed', requestRender);
     SAT.bus.on('selection-changed', requestRender);
     SAT.bus.on('settings-changed', requestRender);
-    SAT.bus.on('locations-changed', function () {
-      starCache = { key: '', raZ: 0, decZ: 0, list: [] };
-      requestRender();
-    });
+    SAT.bus.on('locations-changed', requestRender);
     SAT.bus.on('state-loaded', function () {
-      starCache = { key: '', raZ: 0, decZ: 0, list: [] };
       updateToolbar();
       requestRender();
     });

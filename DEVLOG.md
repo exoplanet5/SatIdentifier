@@ -649,6 +649,36 @@ correct); the waning-gibbous moon (~79% lit at the check epoch) renders with
 the bright limb toward the sun; ☉ off removes both icons and the footer's
 "moon N° away" note; toolbar reads ☉ ✶ MW SN CL CN # Ab E⇄ ⤢.
 
+### Round 12 (2026-08-04) — the fallback was meant for the All-Sky panel
+
+Round 11 was a misread: "sky chart" in the instruction meant the **All-Sky
+panel**. Corrected in both directions —
+
+- **Sky chart:** the deep multi-level star background is back (SAT.stars.cone,
+  m-limit button cycling 4.5/6/7.5/9/11, the round-9 flux-law curve, the
+  "bright stars only" footer warning when the deep asset is absent). The
+  round-11 additions the user wants kept stay: the Milky Way layer, the ☉
+  sun/moon toggle with the phase moon, and the CN constellation-names toggle.
+- **All-Sky panel:** now the SatObserver fallback. Star field is the bright
+  catalogue (SAT.stardata, V ≤ 4.6) drawn whole-hemisphere — SAT.stars.cone
+  and the old allsky.magLimit are gone, and no cache with them (the ~500
+  conversions per render ride frames.js's time-keyed memos; sub-ms). Gained
+  the MW layer and the ☉ toggle with SatObserver's icons (rayed sun, phase
+  moon with the mean-parallax correction). Still no twilight/daylight tint.
+
+One deliberate difference from SatObserver in the All-Sky MW port: instead of
+inline hour-angle math off gmst, the per-vertex J2000→horizontal conversion
+goes through a rotation matrix built once per render from three
+SAT.frames.raDecToAltAz probes — the glow shares the star layer's
+precession/nutation chain, and the harness's "no inline conversion helper"
+rule keeps holding.
+
+Harness coverage moved with the code: test_chart re-asserts the deep cone
+(400-star stub, arc > 100); test_ports gained [5e] — allsky never calls
+SAT.stars.cone (comment-stripped source check), bright dots actually land on
+the dome, MW off draws nothing / on fills one path per isophote level, the
+rayed sun appears at noon, and star drawing has no daylight gating.
+
 ## 13. Running the checks
 
 ```sh

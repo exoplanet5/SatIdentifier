@@ -33,11 +33,11 @@
   var toolBtns = {};
   var drag = null;
 
-  // Star-field clip results. Re-queried only when the tangent point or the view
-  // radius moves by more than 10% of the field — cheap over the ~1000-star bright
-  // catalogue, but the cache also covers the named/lines helpers.
+  // Star cone results. Re-queried only when the tangent point or the view radius
+  // moves by more than 10% of the field — a cone query walks 130k stars, and doing
+  // that on every animation frame is the difference between 60 fps and 6.
   var starCache = {
-    ok: false, ra0: 0, dec0: 0, radiusDeg: 0, queryDeg: 0,
+    ok: false, ra0: 0, dec0: 0, radiusDeg: 0, queryDeg: 0, magLimit: -99,
     stars: [], named: [], lines: [], cons: [],
   };
 
@@ -78,6 +78,7 @@
     if (c.constNames == null) c.constNames = false;
     if (c.sunMoon == null) c.sunMoon = true;
     if (c.mw == null) c.mw = false;             // Milky Way layer, off by default
+    if (c.magLimit == null) c.magLimit = 9.0;
     if (c.grid == null) c.grid = true;
     if (c.labels == null) c.labels = true;
     if (c.padFrac == null) c.padFrac = 0.7;
@@ -341,53 +342,48 @@
   }
 
   // ---- star layer ----------------------------------------------------------
-  // Round 11: the chart star background fell back to the SatObserver logic — the
-  // bright catalogue (SAT.stardata, V <= 4.6) ONLY. The deep Tycho-2/Gaia catalogue
-  // still exists but serves the All-Sky panel alone; this chart never calls
-  // SAT.stars.cone. See CONTRACT "Chart star background".
+  // Round 12: the deep catalogue is REAFFIRMED as this chart's star background —
+  // round 11 briefly made it bright-only on a misread instruction; the SatObserver
+  // bright-only fallback belongs to the All-Sky panel. See CONTRACT
+  // "Chart star background".
 
-  /** Field clip with caching. Queries 1.2x wider than needed so the 10%-of-field
+  /** Cone query with caching. Queries 1.2x wider than needed so the 10%-of-field
    *  reuse window below is always fully covered by the cached disc. */
-  function ensureStars(ra0, dec0, radiusDeg) {
+  function ensureStars(ra0, dec0, radiusDeg, magLimit) {
     var c = starCache;
+    if (!SAT.stars || typeof SAT.stars.cone !== 'function') {
+      // stars.js absent or not loaded yet: an empty field, never a thrown render
+      c.ok = false; c.stars = []; c.named = []; c.lines = []; c.cons = [];
+      return c;
+    }
     var slack = 0.10 * radiusDeg;
-    if (c.ok && Math.abs(radiusDeg - c.radiusDeg) <= slack
+    if (c.ok && c.magLimit === magLimit
+        && Math.abs(radiusDeg - c.radiusDeg) <= slack
         && SAT.frames.sep(c.ra0, c.dec0, ra0, dec0) <= slack) {
       return c;
     }
     var q = radiusDeg * 1.2;
-    var sep = SAT.frames.sep;
-    var sd = (typeof SAT !== 'undefined' && SAT.stardata) || {};
     var stars = [], named = [], lines = [], cons = [];
-    var i, ra;
-    var src = sd.stars || [];                  // rows: [raDeg(-180..180), decDeg, mag]
-    for (i = 0; i < src.length; i++) {
-      ra = ((src[i][0] % 360) + 360) % 360;
-      if (sep(ra0, dec0, ra, src[i][1]) <= q) {
-        stars.push({ raDeg: ra, decDeg: src[i][1], mag: src[i][2] });
+    try { stars = SAT.stars.cone(ra0, dec0, q, magLimit) || []; } catch (e) { stars = []; }
+    try {
+      if (typeof SAT.stars.named === 'function') named = SAT.stars.named(ra0, dec0, q) || [];
+    } catch (e) { named = []; }
+    try {
+      if (typeof SAT.stars.constellationLines === 'function') {
+        lines = SAT.stars.constellationLines(ra0, dec0, q) || [];
       }
-    }
-    var cn = sd.cons || [];                    // rows: [raDeg, decDeg, name]
-    for (i = 0; i < cn.length; i++) {
-      ra = ((cn[i][0] % 360) + 360) % 360;
+    } catch (e) { lines = []; }
+    // constellation names straight from the bright catalogue (CN toggle, round 11)
+    var sep = SAT.frames.sep;
+    var cn = ((typeof SAT !== 'undefined' && SAT.stardata) || {}).cons || [];
+    for (var i = 0; i < cn.length; i++) {
+      var ra = ((cn[i][0] % 360) + 360) % 360;
       if (sep(ra0, dec0, ra, cn[i][1]) <= q) {
         cons.push({ raDeg: ra, decDeg: cn[i][1], name: cn[i][2] });
       }
     }
-    // names and constellation figures via stars.js — those helpers are
-    // bright-catalogue clippers already (and lines keeps the midpoint test)
-    try {
-      if (SAT.stars && typeof SAT.stars.named === 'function') {
-        named = SAT.stars.named(ra0, dec0, q) || [];
-      }
-    } catch (e) { named = []; }
-    try {
-      if (SAT.stars && typeof SAT.stars.constellationLines === 'function') {
-        lines = SAT.stars.constellationLines(ra0, dec0, q) || [];
-      }
-    } catch (e) { lines = []; }
     c.ok = true; c.ra0 = ra0; c.dec0 = dec0;
-    c.radiusDeg = radiusDeg; c.queryDeg = q;
+    c.radiusDeg = radiusDeg; c.queryDeg = q; c.magLimit = magLimit;
     c.stars = stars; c.named = named; c.lines = lines; c.cons = cons;
     return c;
   }
@@ -508,7 +504,7 @@
     var c = cfg();
     if (!c.stars && !c.constLines && !c.starNames && !c.constNames) return;
     var fr = viewRadiusDeg(t);
-    var cache = ensureStars(ra0, dec0, fr);
+    var cache = ensureStars(ra0, dec0, fr, c.magLimit);
     var spanDeg = cssW / Math.max(1e-9, t.scale);
     var i, j, p, prev, st;
 
@@ -536,10 +532,17 @@
         st = cache.stars[i];
         p = proj(st.raDeg, st.decDeg, ra0, dec0, t);
         if (!onScreen(p, 4)) continue;
-        // the SatObserver skychart law, verbatim — a linear ramp is the right
-        // shape for the bright catalogue's mag −1.5..4.6 span
-        var rad = Math.max(0.6, 2.7 - 0.45 * st.mag);
-        var alpha = Math.max(0.25, 0.95 - 0.13 * st.mag);
+        // Radius/alpha vs magnitude, retuned in round 9 (was linear 3.8 - 0.30m):
+        // a linear ramp spends most of its range on the handful of m<3 stars and
+        // compresses m4-9 — where nearly every background star lives — into
+        // ~1.5 px, so the field read as same-size dots. Radius follows the flux
+        // law, shrinking ~18% per magnitude (area halves every ~1.8 mag): every
+        // step of the sequence is a visible step on screen. m0 = 5.2 px, m3 = 2.9,
+        // m5 = 2.0, m7 = 1.3, m9 = 0.9; capped at 6.5 px so Sirius is a star and
+        // not a blob, floored at 0.7 px / alpha 0.42 so the deep catalogue's
+        // m9-10.5 end stays visible rather than clipped away.
+        var rad = Math.min(6.5, Math.max(0.7, 5.2 * Math.pow(10, -0.085 * st.mag)));
+        var alpha = Math.max(0.42, Math.min(1, 1.04 - 0.058 * st.mag));
         ctx.beginPath();
         ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(225,235,255,' + alpha.toFixed(2) + ')';
@@ -1177,6 +1180,11 @@
     if (moon) {
       foot.push('moon ' + SAT.frames.sep(ra0, dec0, moon.raDeg, moon.decDeg).toFixed(0) + '° away');
     }
+    if (SAT.stars && typeof SAT.stars.isDeep === 'function' && !SAT.stars.isDeep()) {
+      foot.push('bright stars only');
+    } else if (!SAT.stars) {
+      foot.push('no star catalogue');
+    }
     elFoot.textContent = foot.join(' · ');
   }
 
@@ -1395,13 +1403,23 @@
     }
     var bar = SAT.util.el('div', { class: 'chart-toolbar' }, [
       tbtn('sunMoon', '☉', 'sun & moon (moon shows phase)', toggleLayer('sunMoon')),
-      tbtn('stars', '✶', 'stars (bright catalogue, to mag 4.6)', toggleLayer('stars')),
+      tbtn('stars', '✶', 'stars', toggleLayer('stars')),
       tbtn('mw', 'MW', 'Milky Way glow', toggleLayer('mw')),
       tbtn('starNames', 'SN', 'star names (fields wider than 5°)', toggleLayer('starNames')),
       tbtn('constLines', 'CL', 'constellation lines (fields wider than 5°)', toggleLayer('constLines')),
       tbtn('constNames', 'CN', 'constellation names (fields wider than 5°)', toggleLayer('constNames')),
       tbtn('grid', '#', 'RA/Dec grid', toggleLayer('grid')),
       tbtn('labels', 'Ab', 'satellite labels', toggleLayer('labels')),
+      tbtn('mag', 'm9', 'star magnitude limit', function () {
+        var c = cfg();
+        var steps = [4.5, 6, 7.5, 9, 11];
+        var i = steps.indexOf(c.magLimit);
+        c.magLimit = steps[(i + 1) % steps.length];
+        invalidateStars();
+        try { SAT.state.save(); } catch (e) { /* ignore */ }
+        updateToolbar();
+        requestRender();
+      }),
       tbtn(null, 'E⇄', 'mirror the chart east/west (odd number of reflections)', function () {
         // flipEW lives in obs, so this routes through setObs and marks the scan
         // stale. Conservative — a mirror changes no sky geometry — but setObs is the
@@ -1426,6 +1444,7 @@
     toolBtns.constNames.classList.toggle('chart-on', !!c.constNames);
     toolBtns.grid.classList.toggle('chart-on', !!c.grid);
     toolBtns.labels.classList.toggle('chart-on', !!c.labels);
+    toolBtns.mag.textContent = 'm' + c.magLimit;
   }
 
   function init(bodyEl, win) {

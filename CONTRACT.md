@@ -309,10 +309,10 @@ SAT.state.locations = [{ id, name, kind, latDeg, lonDeg, altM, norad, active: fa
 
 SAT.state.settings = {
   chart:  { stars:true, starNames:false, constLines:true, constNames:false,
-            sunMoon:true, mw:false, grid:true, labels:true, padFrac:0.7 },
-  // round 11: chart.magLimit retired — the chart star background is the bright
-  // catalogue only (see "Chart star background"); a stored magLimit is ignored.
-  allsky: { eastLeft:true, elStep:30, stars:true },
+            sunMoon:true, mw:false, grid:true, magLimit:9.0, labels:true, padFrac:0.7 },
+  allsky: { eastLeft:true, elStep:30, stars:true, sunMoon:true, mw:false },
+  // round 12: allsky.magLimit retired — the All-Sky star field is the bright
+  // catalogue only (see its panel section); a stored value is ignored.
   scan:   { coarseStepS:30, fineStepS:1.0, marginDeg:0 /*0 = auto*/,
             workers:0 /*0 = auto: hardwareConcurrency-1, capped 8*/,
             maxCrossings:5000 },
@@ -724,10 +724,11 @@ penumbra dims by `2.5·log10` of the unobscured solar fraction).
 ## SAT.stars (stars.js) — AGENT S
 
 Loads `assets/stars_m9.bin` once (fetch → ArrayBuffer → typed-array views) and answers
-cone queries. Since round 11 the only cone consumer is the **All-Sky panel** — the
-chart's star background is the bright catalogue only (see "Chart star background");
-the chart still uses `named()` / `constellationLines()`, which are bright-catalogue
-helpers anyway. Falls back to `SAT.stardata` (the bright-star catalogue
+cone queries. Since round 12 the only cone consumer is the **sky chart** — the
+All-Sky panel's star field is the bright catalogue only (its SatObserver fallback;
+see its panel section). The chart also uses `named()` / `constellationLines()`,
+which are bright-catalogue helpers anyway. Falls back to `SAT.stardata` (the
+bright-star catalogue
 from SatObserver, mag ≤ 4.6) when the deep file is absent, so the app still runs
 before `tools/make_starcat.py` has been executed.
 
@@ -806,14 +807,15 @@ view and gets the largest default window.
   chart matches their frame. Always visible; this is the thing people get wrong.
 - Layers, respecting `settings.chart` and redrawing on `time / obs-changed /
   scan-done / filters-changed / selection-changed / settings-changed / state-loaded`:
-  - **Chart star background (round 11 — SatObserver fallback, binding).** Stars come
-    from the bright catalogue `SAT.stardata` ONLY (BSC5/HYG, V ≤ 4.6) — the chart
-    does not query `SAT.stars.cone` and has no magnitude-limit control; the deep
-    Tycho-2/Gaia catalogue remains, but serves the All-Sky panel alone. Radius and
-    alpha follow the SatObserver skychart law verbatim
-    (`rad = max(0.6, 2.7 − 0.45·mag)`, `alpha = max(0.25, 0.95 − 0.13·mag)`).
-    Star names, constellation lines AND constellation names (`constNames`, its own
-    toolbar toggle) draw on fields wider than 5°.
+  - **Chart star background (round 12 — deep catalogue, binding).** Stars from
+    `SAT.stars.cone` down to `settings.chart.magLimit` (m-limit toolbar button
+    cycles 4.5/6/7.5/9/11); radius/alpha follow the flux-law curve (round 9:
+    radius shrinks ~18 %/mag, area halves every ~1.8 mag) so the m 4–9 background
+    — where nearly every field star lives — reads as distinct sizes. A round-11
+    misreading briefly made this layer bright-catalogue-only; the deep background
+    is REAFFIRMED here — the SatObserver bright-only fallback belongs to the
+    **All-Sky panel** (see its section). Star names, constellation lines AND
+    constellation names (`constNames`, round 11) draw on fields wider than 5°.
   - **Milky Way** isophote layer (`settings.chart.mw`, default off): the d3-celestial
     contours from `vendor/mwdata.js`, ported from the SatObserver polar chart to the
     gnomonic frame — far-hemisphere / near-90° vertices are clamped radially to an
@@ -925,13 +927,30 @@ no section headers taking their own line, no wrapped rows.
 ### SAT.allsky.init(bodyEl, win) — (js/allsky.js)
 
 Port of SatObserver's `skychart.js`, reduced to a **context view**: polar alt/az
-all-sky chart of the active site, showing the horizon, the star field (with the
-original's SN / CL / CN toggles — bright star names, constellation lines and names,
-drawn from `SAT.stardata`), the Sun and Moon, and — the point of it here — the
-**FOV footprint** (the projected outline of the current field) plus the tracks of
-the objects in `chartCrossings()`. Answers "where
-am I actually looking, and what else is up". Secondary window, closed by default.
-Expose: `SAT.allsky = { init, requestRender }`.
+all-sky chart of the active site. **All-Sky star background (round 12 — SatObserver
+fallback, binding):** the star field is the bright catalogue `SAT.stardata` ONLY
+(BSC5/HYG, V ≤ 4.6), drawn whole-hemisphere with SatObserver's radius/alpha law
+(`rad = max(0.6, 2.7 − 0.45·mag)`, `alpha = max(0.25, 0.95 − 0.13·mag)`) —
+`SAT.stars.cone` and the old `allsky.magLimit` are not used. With it come the
+original's SN / CL / CN toggles and the two layers ported alongside:
+
+- **Milky Way** isophotes (`vendor/mwdata.js`, `mw` toggle, default off) with
+  SatObserver's rim-parity fill; the per-vertex J2000→horizontal conversion goes
+  through a per-frame rotation matrix built from three `SAT.frames.raDecToAltAz`
+  probes, so the glow shares the star layer's precession/nutation chain instead of
+  re-deriving hour angles inline.
+- **Sun & Moon** on a `sunMoon` toggle (default on): rayed sun disc; moon with its
+  phase terminator, the mean-parallax elevation correction (−0.95°·cos el), bright
+  limb toward the sun's chart position (valid below the horizon too — `project()`
+  clamps elevation but keeps azimuth direction). Drawn only above the horizon, as
+  in SatObserver.
+- **Documented deviation from SatObserver:** NO twilight/daylight sky tint and no
+  MW twilight fade — the background stays the fixed dark theme.
+
+Also shows the horizon grid and — the point of it here — the **FOV footprint**
+(the projected outline of the current field) plus the tracks of the objects in
+`chartCrossings()`. Answers "where am I actually looking, and what else is up".
+Secondary window, closed by default. Expose: `SAT.allsky = { init, requestRender }`.
 
 ### SAT.ui.sources.init / SAT.ui.locations.init / SAT.ui.satinfo.init
 
