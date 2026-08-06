@@ -543,5 +543,155 @@ console.log('\n[11] extended pass track');
   SAT.state.getObj = savedGetObj;
 }
 
+// ---------------------------------------------------------------- test 12
+// Adaptive star depth (round 14): the pure law, then the deep-field wiring —
+// a narrow auto-mode view must consult SAT.stars.deepField at m17, draw the
+// local cone while the fetch is out, and swap the online stars in when it lands.
+console.log('\n[12] adaptive star depth (rounds 14/15)');
+{
+  const A = C.autoMagLimit;
+  ok('law: 2° field -> 17 (deep tiles)', A(2) === 17, 'got ' + A(2));
+  ok('law: 2.99° -> 17, strict boundary', A(2.99) === 17, 'got ' + A(2.99));
+  ok('law: 3° -> 10.5 (local catalogue limit)', A(3) === 10.5, 'got ' + A(3));
+  ok('law: 6° -> 9.0', A(6) === 9, 'got ' + A(6));
+  ok('law: 12° -> 7.5', A(12) === 7.5, 'got ' + A(12));
+  ok('law: 24° -> 6.0', A(24) === 6, 'got ' + A(24));
+  ok('law: 60° -> floor 4.5', A(60) === 4.5, 'got ' + A(60));
+  let mono = true, prev = Infinity;
+  for (let d = 3; d <= 90; d += 0.25) {
+    const m = A(d);
+    if (m > prev + 1e-9) mono = false;
+    prev = m;
+  }
+  ok('law: monotone non-increasing beyond 3°', mono);
+
+  // ---- wiring: instrumented SAT.stars with a deep field that we control
+  const T0 = Date.parse('2026-07-21T22:00:00Z');
+  const LOC = {
+    id: 'l1', name: 'Greenwich', latDeg: 51.4779, lonDeg: -0.0015, altM: 47,
+    active: true, color: '#ff5252',
+  };
+  const deepCalls = [];
+  const coneMags = [];
+  let deepAnswer = { state: 'loading', stars: null };
+  let onReadyCb = null;
+  global.SAT.clock = { getDate: () => new Date(T0) };
+  global.SAT.stars = {
+    isDeep: () => true,
+    localLimit: () => 10.5,
+    cone: (ra, dec, r, mag) => {
+      coneMags.push(mag);
+      const out = [];
+      for (let k = 0; k < 50; k++) {
+        out.push({ raDeg: ra + (k % 10 - 5) * r / 8, decDeg: dec + (Math.floor(k / 10) - 2) * r / 8, mag: 4 + (k % 6) });
+      }
+      return out;
+    },
+    deepField: (ra, dec, r, mag, onReady) => {
+      deepCalls.push({ r: r, mag: mag });
+      onReadyCb = onReady;
+      return deepAnswer;
+    },
+    named: () => [],
+    constellationLines: () => [],
+  };
+  SAT.state.activeLocation = () => LOC;
+  SAT.state.scan = { crossings: [], stale: false };
+  SAT.state.visibleCrossings = () => [];
+  SAT.state.chartCrossings = () => [];
+  // 1.5° x 1.0° FOV in a 900x700 window: the enclosing view span is ~2.3° < 3°,
+  // so auto mode wants the m17 online depth. Move the pointing 2° from wherever
+  // the last render left the star cache, so ensureStars must re-query.
+  Object.assign(SAT.state.obs, {
+    mode: 'radec', raDeg: RA0 + 2, decDeg: DEC0, track: 'sky',
+    fovShape: 'rect', fovWDeg: 1.5, fovHDeg: 1.0, rotDeg: 0, flipEW: false,
+  });
+  Object.assign(SAT.state.settings.chart, {
+    stars: true, starNames: false, constLines: false, constNames: false,
+    sunMoon: false, mw: false, grid: true, labels: true, magAuto: true,
+  });
+  C.fitView();
+
+  ok('narrow auto view consulted deepField at m17',
+    deepCalls.length >= 1 && deepCalls[deepCalls.length - 1].mag === 17,
+    deepCalls.length + ' calls, mag ' + (deepCalls.length ? deepCalls[deepCalls.length - 1].mag : '—'));
+  ok('local cone drew the interim field at the same limit',
+    coneMags.length >= 1 && coneMags[coneMags.length - 1] === 17,
+    'cone mags: ' + coneMags.join(','));
+
+  // the fetch lands: onReady must invalidate and re-render, and the re-query
+  // must take the online stars instead of the local cone
+  const deepStars = [];
+  for (let k = 0; k < 120; k++) {
+    deepStars.push({ raDeg: RA0 + 2 + (k % 12 - 6) * 0.1, decDeg: DEC0 + (Math.floor(k / 12) - 5) * 0.1, mag: 11 + (k % 7) });
+  }
+  deepAnswer = { state: 'ready', stars: deepStars, truncated: false };
+  const cones0 = coneMags.length, arcs0 = calls.arc || 0;
+  ok('deepField handed a completion callback', typeof onReadyCb === 'function');
+  onReadyCb();
+  ok('deep stars swapped in without a local re-cone',
+    coneMags.length === cones0 && (calls.arc || 0) - arcs0 > 100,
+    (coneMags.length - cones0) + ' new cones, ' + ((calls.arc || 0) - arcs0) + ' arcs');
+
+  // manual mode pins the limit and never touches the deep field
+  const deeps1 = deepCalls.length;
+  Object.assign(SAT.state.settings.chart, { magAuto: false, magLimit: 9 });
+  Object.assign(SAT.state.obs, { raDeg: RA0 + 6 });   // move: force a re-query
+  C.requestRender();
+  ok('manual m9 stays local', deepCalls.length === deeps1 &&
+    coneMags[coneMags.length - 1] === 9, 'cone mags tail: ' + coneMags.slice(-2).join(','));
+
+  // wide auto field: the law sheds depth and stays local
+  Object.assign(SAT.state.settings.chart, { magAuto: true });
+  Object.assign(SAT.state.obs, { fovWDeg: 30, fovHDeg: 20, raDeg: RA0 });
+  C.fitView();
+  const wideMag = coneMags[coneMags.length - 1];
+  ok('wide auto field stays local and shallow',
+    deepCalls.length === deeps1 && wideMag < 10.5 + 1e-9 && wideMag >= 4.5,
+    'cone mag ' + wideMag);
+}
+
+// ---------------------------------------------------------------- test 13
+// Star dot law (round 15) — Stellarium's computeRCMag design on a canvas:
+// flux-law radius above a 1 px floor, cubic luminance fade below it, hard
+// cutoff, sqrt-compressed bright end, exposure shift for deep limits.
+console.log('\n[13] starDot — Stellarium-derived dot law');
+{
+  const S = C.starDot;
+  let d = S(0, 11);
+  close('m0 at m11 limit: flux-law radius', d.rad, 5.2, 1e-9, 'px');
+  ok('m0 full luminance', d.lum === 1, 'lum ' + d.lum);
+  d = S(5, 9);
+  close('m5 radius matches round 9', d.rad, 5.2 * Math.pow(10, -0.425), 1e-9, 'px');
+  close('m5 luminance matches round 9', d.lum, 1.04 - 0.29, 1e-9, '');
+  d = S(9, 9);
+  ok('faint floor: radius pinned at 1 px', d.rad === 1, 'rad ' + d.rad);
+  ok('faint floor: luminance faded cubically',
+    Math.abs(d.lum - (1.04 - 0.058 * 9) * Math.pow(5.2 * Math.pow(10, -0.765), 3)) < 1e-9,
+    'lum ' + d.lum.toFixed(4));
+
+  // the exposure shift: a star AT the limit renders the same at every deep limit
+  const at17 = S(17, 17), at11 = S(11, 11);
+  ok('m17 at m17 == m11 at m11 (exposure shift)',
+    at17.rad === at11.rad && Math.abs(at17.lum - at11.lum) < 1e-12,
+    'lum ' + at17.lum.toFixed(4));
+  ok('a star at the limit is nearly invisible', at17.lum < 0.1, 'lum ' + at17.lum.toFixed(4));
+  ok('below the cutoff is culled, not drawn', S(20, 17) === null);
+
+  d = S(0, 17);
+  ok('bright end sqrt-compressed, not a blob', d.rad > 6.5 && d.rad < 9.5 && d.lum === 1,
+    'rad ' + d.rad.toFixed(2));
+
+  // monotone: fainter never gets bigger or brighter (until it disappears)
+  let mono = true, pr = Infinity, pl = Infinity;
+  for (let m = -1; m <= 18; m += 0.25) {
+    const s = S(m, 17);
+    if (!s) break;
+    if (s.rad > pr + 1e-9 || s.lum > pl + 1e-9) mono = false;
+    pr = s.rad; pl = s.lum;
+  }
+  ok('radius and luminance monotone in magnitude', mono);
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : '\nall checks passed\n');
 process.exit(failures ? 1 : 0);

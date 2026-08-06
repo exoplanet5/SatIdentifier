@@ -309,7 +309,12 @@ SAT.state.locations = [{ id, name, kind, latDeg, lonDeg, altM, norad, active: fa
 
 SAT.state.settings = {
   chart:  { stars:true, starNames:false, constLines:true, constNames:false,
-            sunMoon:true, mw:false, grid:true, magLimit:9.0, labels:true, padFrac:0.7 },
+            sunMoon:true, mw:false, grid:true, magAuto:true, magLimit:9.0,
+            labels:true, padFrac:0.7 },
+  // round 14: magAuto (default true) makes the chart's star depth follow the view
+  // span (see the chart section); magLimit is the pinned MANUAL limit, used only
+  // when magAuto is false. Old saved states lack magAuto and so pick up the
+  // adaptive default on first load — that migration is deliberate.
   allsky: { eastLeft:true, elStep:30, stars:true, sunMoon:true, mw:false },
   // round 12: allsky.magLimit retired — the All-Sky star field is the bright
   // catalogue only (see its panel section); a stored value is ignored.
@@ -782,10 +787,50 @@ with the right magnitude. It caught every one of the above. Keep it.
   `SAT.stars.constellationLines(ra0, dec0, radiusDeg) -> [[{raDeg,decDeg},...], ...]`
   — both from `SAT.stardata`; used for wide fields only.
 - `SAT.stars.isDeep() -> bool`.
+- `SAT.stars.localLimit() -> number` (round 14) — the live catalogue's magnitude
+  limit, read from the binary header (10.5 Gaia build / 9.0 Tycho / 4.6 on the
+  bright fallback). The chart compares its wanted depth against this to decide
+  when the deep tile set is needed at all.
+- `SAT.stars.deepField(ra0, dec0, radiusDeg, magLimit, onReady)
+  -> {state:'ready'|'loading'|'error', stars, truncated}` (round 15 — LOCAL deep
+  tiles; the round-14 online VizieR cone is REMOVED, no runtime network fetch) —
+  the deep star source behind the chart's < 3° fields, reading the tiled local
+  catalogue that `make_starcat.py --deep17` builds (see below) through
+  `GET /api/stars/deep` (presence probe, once) and `GET /api/stars/tile/<name>`
+  (one small binary per tile, LRU-cached ~16 tiles in memory). Never throws,
+  never rejects. When every tile covering the cone is cached the result is
+  computed synchronously — per-tile cone queries (the same kernel `cone()` uses)
+  merged and capped at the brightest 20000 — and the state is `'ready'`;
+  missing tiles are fetched (local server, milliseconds) and `'loading'` returns
+  with `stars:null`, the chart drawing the bundled catalogue until `onReady`
+  fires. If the tile set has not been built (probe says absent, or a tile 404s)
+  the state parks in `'error'` and the chart stays on the bundled catalogue with
+  a footer note saying the deep catalogue is not built — quietly, no per-frame
+  retries (re-probe only on a fresh page load).
+- `SAT.stars.tilesForCone(ra0, dec0, radiusDeg) -> [name, ...]` (round 15, pure,
+  unit-tested) — the tile names covering a cone under the scheme below, handling
+  the RA wrap and the polar caps.
+
+**Deep tile set** (round 15): `data/stars17/` (gitignored — several hundred MB;
+per-machine, built once by the user; the packaged app reads it from its own
+DATA_DIR, so copy or rebuild it into Application Support for the .app). Scheme:
+4° declination bands indexed 0..44 from −90; bands with |dec| ≥ 86 are single
+polar tiles, every other band splits into twelve 30° RA columns; names are
+`t<band>_<col>.bin` (polar caps use col 0). Each tile is the same STR1
+structure-of-arrays binary as the bundled asset (header magLimit = the build's
+V cut), dec-sorted for the shared cone kernel. `index.json` records
+`{magLimit, count, tiles, builtIso, epochYr}` and is what the presence probe
+serves. Gaia DR3 via VizieR per tile (Gmag < cut + 0.5, G→V by Riello+ 2021,
+proper motions to the build-time decimal year), with the BSC5 bright-star merge
+applied per tile — Gaia genuinely lacks its saturated brightest stars (Vega,
+Sirius class), and a 2° field containing Vega must still show Vega. A fetch
+that trips the size guard splits recursively in RA. The build is resumable:
+tiles whose file already exists are skipped.
 
 `tools/make_starcat.py` fetches Tycho-2 from VizieR, keeps `VT ≤ 9.0`, converts to
 Johnson V, sorts by declination and writes the file. Dev-time only; the generated
-asset is committed so users never need it.
+asset is committed so users never need it. `--source gaia` builds the deeper
+bundled asset; `--deep17` (round 15) builds the deep tile set above.
 
 ## Panel modules (window content)
 
@@ -807,15 +852,49 @@ view and gets the largest default window.
   chart matches their frame. Always visible; this is the thing people get wrong.
 - Layers, respecting `settings.chart` and redrawing on `time / obs-changed /
   scan-done / filters-changed / selection-changed / settings-changed / state-loaded`:
-  - **Chart star background (round 12 — deep catalogue, binding).** Stars from
-    `SAT.stars.cone` down to `settings.chart.magLimit` (m-limit toolbar button
-    cycles 4.5/6/7.5/9/11); radius/alpha follow the flux-law curve (round 9:
-    radius shrinks ~18 %/mag, area halves every ~1.8 mag) so the m 4–9 background
-    — where nearly every field star lives — reads as distinct sizes. A round-11
-    misreading briefly made this layer bright-catalogue-only; the deep background
-    is REAFFIRMED here — the SatObserver bright-only fallback belongs to the
-    **All-Sky panel** (see its section). Star names, constellation lines AND
-    constellation names (`constNames`, round 11) draw on fields wider than 5°.
+  - **Chart star background (round 15 — adaptive depth, all local, binding).**
+    Stars from `SAT.stars.cone` down to an *effective* magnitude limit. Default
+    is **auto** (`settings.chart.magAuto`): the limit follows the view span D —
+    the diameter in degrees of the circle enclosing the viewport — via the pure
+    helper `SAT.chart.autoMagLimit(D)`:
+    - **D < 3°: 17.0**, served by the LOCAL deep tile set through
+      `SAT.stars.deepField` (round 15; the round-14 online VizieR fetch is
+      REMOVED — no runtime network access, ever). While tiles load (local
+      server, milliseconds) or when the tile set has not been built, the
+      bundled catalogue draws at its own `localLimit()` and the footer says
+      which of those it is.
+    - **D ≥ 3°: clamp(10.5 − 5·log10(D/3), 4.5, 10.5)** — 10.5 at 3°, 9 at 6°,
+      7.5 at 12°, 6 at 24°, floor 4.5 from ~48° up — entirely from the bundled
+      catalogue, so star counts stay bounded as the field grows.
+    The m-limit toolbar button cycles auto → 4.5/6/7.5/9/11 → auto (a manual
+    value pins `magLimit` and clears `magAuto`; the footer always states the
+    effective limit).
+    **Star rendering (round 15 — Stellarium-derived, binding).** The mapping
+    from magnitude to dot follows Stellarium's `StelSkyDrawer::computeRCMag`
+    design, adapted to a fixed-tone canvas (pure helper
+    `SAT.chart.starDot(mag, mlim) -> {rad, lum}|null`, unit-tested; `mlim` is
+    the *drawn* depth — the delivered catalogue's limit, not the wanted one):
+    - Exposure shift (Stellarium's FOV factor): `m = mag − max(0, mlim − 11)`,
+      so deep narrow fields behave like a longer exposure — an m17 star at an
+      m17 limit renders like m11 did at m11 — while limits ≤ 11 keep the
+      round-9 look for every star above the faint floor.
+    - Flux-law radius (round 9, kept): `rr = 5.2·10^(−0.085·m)`; luminance ramp
+      `lum = clamp(1.04 − 0.058·m, 0, 1)`.
+    - **Faint end (the round-15 change): below `rr = 1 px` the dot stops
+      shrinking and FADES instead** — `lum *= rr³` (Stellarium's cubic
+      sub-floor falloff), radius pinned at 1 px, and dots with `lum < 0.02`
+      are culled entirely (Stellarium's 0.3-radius cutoff). The old hard
+      floors (0.7 px, alpha 0.42) that turned every star of the faint tail
+      into identical pepper are GONE — the field now grades smoothly to
+      invisibility at the limit.
+    - Bright end: radius past 6.5 px is sqrt-compressed
+      (`6.5 + sqrt(1 + rr − 6.5) − 1`, Stellarium's MAX_LINEAR_RADIUS device),
+      so Alcyone in a deep Pleiades field is prominent, not a blob.
+    Round-12 note kept: the deep background is REAFFIRMED — the SatObserver
+    bright-only fallback belongs to the **All-Sky panel** (see its section;
+    the All-Sky keeps its own SatObserver dot law and is NOT changed by round
+    15). Star names, constellation lines AND constellation names (`constNames`,
+    round 11) draw on fields wider than 5°.
   - **Milky Way** isophote layer (`settings.chart.mw`, default off): the d3-celestial
     contours from `vendor/mwdata.js`, ported from the SatObserver polar chart to the
     gnomonic frame — far-hemisphere / near-90° vertices are clamped radially to an
@@ -1057,6 +1136,16 @@ launches and analyst objects are exactly the unidentified trails people are chas
   (`https://www.mmccants.org/programs/qsmag.zip`), extracted in memory and parsed to
   `{norad: stdMag}`. Cached 30 d as `qsmag.json`. Missing file ⇒ `{ok:true, mags:{}}`
   and the UI simply falls back to the RCS tier — never a hard failure.
+- `GET /api/stars/deep` (round 15) — presence probe for the deep tile set:
+  `{ok, present}` plus, when present, the `index.json` fields
+  `{magLimit, count, tiles, builtIso, epochYr}`. Reads `DATA_DIR/stars17/`;
+  never touches the network (the round-14 online `/api/stars/cone` endpoint is
+  REMOVED — the backend does no star fetching at runtime at all).
+- `GET /api/stars/tile/<name>` (round 15) — one deep tile as raw bytes
+  (`application/octet-stream`, the STR1 binary). `<name>` must match
+  `^t\d{1,2}_\d{1,2}\.bin$` (400 otherwise — the path is user-influenced and
+  goes to the filesystem); 404 when the tile set or the tile is absent, which
+  the frontend treats as "not built", not as an error to retry.
 - `GET /api/state` payload carries `catalogRefs` (per-source cache keys) and
   `pasted` (inline pasted TLEs); cached catalogues themselves are never stored in
   `state.json`.

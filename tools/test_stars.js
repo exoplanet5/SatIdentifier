@@ -98,6 +98,7 @@ function fmt(v) {
     check('star count', info.count, 130183, 0, 'stars');
     check('count() agrees', S.count(), 130183, 0, 'stars');
     ok('isDeep()', S.isDeep() === true);
+    check('localLimit() reads the header V cut', S.localLimit(), 9.0, 1e-6, 'mag');
     const bytes = fs.statSync(ASSET).size;
     check('asset size matches 12 + 10*count', bytes, 12 + 10 * info.count, 0, 'bytes');
   }
@@ -228,6 +229,115 @@ function fmt(v) {
     for (const s of c) { worstMag = Math.max(worstMag, s.mag); worstSep = Math.max(worstSep, F.sep(RA0, DEC0, s.raDeg, s.decDeg)); }
     ok('fallback respects the cone', worstSep <= 10.0, 'worst ' + worstSep.toFixed(4) + ' deg');
     ok('fallback is the V<=4.6 catalogue', worstMag <= 4.6, 'faintest ' + worstMag.toFixed(2));
+    check('fallback localLimit', B.localLimit(), 4.6, 1e-6, 'mag');
+  }
+
+  console.log('\n[8b] deep tile set — tilesForCone + deepField (round 15)');
+  {
+    // STR1 tile bytes built here, independent of the app's writer — the format
+    // is pinned by the CONTRACT, so the test constructs it from the spec.
+    function tileBytes(stars) {
+      const rows = stars.slice().sort((a, b) => a[1] - b[1]);
+      const n = rows.length;
+      const b = Buffer.alloc(12 + 10 * n);
+      b.write('STR1', 0, 'ascii');
+      b.writeUInt32LE(n, 4);
+      b.writeFloatLE(17.0, 8);
+      rows.forEach((s, i) => {
+        b.writeFloatLE(s[0], 12 + 4 * i);
+        b.writeFloatLE(s[1], 12 + 4 * n + 4 * i);
+        b.writeInt16LE(s[2], 12 + 8 * n + 2 * i);
+      });
+      return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+    }
+
+    const reqs = [];
+    let present = true;
+    const TILES = {
+      't27_3.bin': tileBytes([
+        [100.0, 20.0, 850], [100.1, 20.0, 1450], [99.9, 20.05, 1690],
+        [105.0, 21.9, 300],                       // in the tile, outside the cone
+      ]),
+    };
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u === '/api/stars/deep') {
+        reqs.push(u);
+        return { ok: true, status: 200,
+                 json: async () => ({ ok: true, present: present, magLimit: 17, count: 4 }) };
+      }
+      if (u.startsWith('/api/stars/tile/')) {
+        reqs.push(u);
+        const name = u.slice('/api/stars/tile/'.length);
+        if (!TILES[name]) return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) };
+        return { ok: true, status: 200, arrayBuffer: async () => TILES[name] };
+      }
+      const b = fs.readFileSync(ASSET);
+      return { ok: true, status: 200,
+               arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) };
+    };
+    reloadModule('stars.js');
+    const D = SAT.stars;
+    await D.load();
+    check('deep localLimit from the binary header', D.localLimit(), 9.0, 1e-6, 'mag');
+
+    // ---- tilesForCone, pure ----
+    let t = D.tilesForCone(100.013, 20.019, 1.08);
+    ok('mid-latitude cone maps to one tile', t.length === 1 && t[0] === 't27_3.bin', t.join(','));
+    t = D.tilesForCone(1, 0, 3);
+    ok('cone across RA 0 pulls both wrap columns',
+      t.length === 6 && t.indexOf('t22_0.bin') >= 0 && t.indexOf('t22_11.bin') >= 0, t.join(','));
+    t = D.tilesForCone(123, 88, 2);
+    ok('polar cone is the single cap tile', t.length === 1 && t[0] === 't44_0.bin', t.join(','));
+    t = D.tilesForCone(15, 84.5, 1);
+    ok('near-polar band widens its RA reach', t.indexOf('t43_0.bin') >= 0 && t.length >= 1, t.join(','));
+
+    // ---- deepField over the tile set ----
+    let readyCount = 0;
+    const onReady = () => readyCount++;
+    const settle = () => new Promise((res) => setImmediate(res));
+
+    let r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    ok('first call probes the index, loading', r.state === 'loading' && reqs[0] === '/api/stars/deep');
+    await settle();
+    ok('probe completion fired onReady', readyCount === 1, 'fired ' + readyCount);
+    r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    ok('second call fetches the covering tile, loading',
+      r.state === 'loading' && reqs[1] === '/api/stars/tile/t27_3.bin', reqs[1]);
+    await settle();
+    ok('tile arrival fired onReady', readyCount === 2, 'fired ' + readyCount);
+    r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    ok('now ready with the cone subset of the tile',
+      r.state === 'ready' && r.stars.length === 3, r.stars && r.stars.length + ' stars');
+    ok('v100 decoded to magnitudes',
+      r.stars.every((s) => [8.5, 14.5, 16.9].some((v) => Math.abs(s.mag - v) < 1e-3)));
+    ok('magLimit filters within the tile',
+      D.deepField(100.013, 20.019, 1.08, 12, onReady).stars.length === 1);
+    r = D.deepField(100.2, 20.1, 0.9, 17, onReady);
+    ok('pan inside the tile stays ready, no new request',
+      r.state === 'ready' && reqs.length === 2, reqs.length + ' reqs');
+
+    // ---- not built: 404 tile parks the whole feature ----
+    const warn = console.warn; console.warn = () => {};   // the 404 warns; expected
+    r = D.deepField(200, -40, 1, 17, onReady);            // t12_6-ish: not in TILES
+    ok('missing tile starts as loading', r.state === 'loading');
+    await settle();
+    r = D.deepField(200, -40, 1, 17, onReady);
+    ok('404 parks deepField in error', r.state === 'error');
+    r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    ok('…for every field, with no retry storm',
+      r.state === 'error' && reqs.length === 3, reqs.length + ' reqs total');
+    console.warn = warn;
+
+    // ---- index says not built ----
+    present = false;
+    reloadModule('stars.js');
+    const D2 = SAT.stars;
+    await D2.load();
+    D2.deepField(100, 20, 1, 17, onReady);
+    await settle();
+    r = D2.deepField(100, 20, 1, 17, onReady);
+    ok('absent tile set reports error after the probe', r.state === 'error');
   }
 
   // ============================================================ photometry.js

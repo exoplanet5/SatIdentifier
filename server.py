@@ -55,6 +55,7 @@ if IS_BUNDLED:
 else:
     DATA_DIR = SCRIPT_DIR / "data"
 CACHE_DIR = DATA_DIR / "cache"
+STARS17_DIR = DATA_DIR / "stars17"   # deep star tiles (round 15), user-built
 STATE_PATH = DATA_DIR / "state.json"
 CONFIG_PATH = DATA_DIR / "config.json"
 
@@ -69,6 +70,10 @@ CELESTRAK_NAME_URL = "https://celestrak.org/NORAD/elements/gp.php?NAME={name}&FO
 SATCAT_URL = "https://celestrak.org/satcat/records.php?CATNR={norad}&FORMAT=JSON"
 SATCAT_BULK_URL = "https://celestrak.org/pub/satcat.csv"
 QSMAG_URL = "https://www.mmccants.org/programs/qsmag.zip"
+# Round 15: the chart's deep star field is a LOCAL tile set (data/stars17/,
+# built once by tools/make_starcat.py --deep17) — the round-14 online VizieR
+# cone endpoint is gone; the backend does no star fetching at runtime.
+STARS_TILE_RE = re.compile(r"^t\d{1,2}_\d{1,2}\.bin$")
 SPACETRACK_BASE = "https://www.space-track.org"
 SPACETRACK_LOGIN = SPACETRACK_BASE + "/ajaxauth/login"
 
@@ -804,6 +809,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._satcat_bulk(qs)
             if path == "/api/qsmag":
                 return self._qsmag(qs)
+            if path == "/api/stars/deep":
+                return self._stars_deep()
+            if path.startswith("/api/stars/tile/"):
+                return self._stars_tile(path[len("/api/stars/tile/"):])
             if path == "/api/cache":
                 return self._cache_list()
             if path.startswith("/api/cache/"):
@@ -933,6 +942,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
         payload["cacheKey"] = key
         cache_write(key, payload)
         self._respond(200, payload)
+
+    def _stars_deep(self):
+        """Presence probe for the deep star tile set (round 15).
+
+        The index is written only when a build COMPLETES, so a half-finished
+        (or still-running) build correctly reads as absent here.
+        """
+        try:
+            idx = json.loads((STARS17_DIR / "index.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return self._respond(200, {"ok": True, "present": False})
+        return self._respond(200, {"ok": True, "present": True, **idx})
+
+    def _stars_tile(self, name):
+        """One deep tile as raw STR1 bytes.
+
+        The name reaches the filesystem, so it is matched against the strict
+        tile pattern rather than sanitised — anything else is a 400.
+        """
+        if not STARS_TILE_RE.match(name):
+            raise ApiError(400, "Bad tile name")
+        try:
+            data = (STARS17_DIR / name).read_bytes()
+        except OSError:
+            raise ApiError(404, f"No such tile: {name} (deep set not built?)")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(data)
 
     def _catalog_full(self, qs):
         """The object set the scan runs against, enriched for photometry.

@@ -200,12 +200,26 @@ section [o]).
   draws whichever matches your tracking mode, including the field rotation a parked
   mount sees, and the trail drawn across the field between entry and exit is the
   thing to hold up against your frame.
-- **Star background** on the sky chart from Tycho-2 to V = 9.0 (130 183 stars), with
-  BSC5/HYG photometry at the bright end — deep enough that a 1° field is not empty —
-  plus Milky Way, Sun/Moon (with lunar phase) and constellation-name overlays, each
-  on its own toolbar toggle. The **All-Sky panel** uses the bright-star set only
-  (V ≤ 4.6, as SatObserver), with the same Milky Way and Sun/Moon toggles. Neither
-  view tints its background with twilight or daylight.
+- **Adaptive star background** on the sky chart: the depth follows the field.
+  Views narrower than 3° draw **Gaia DR3 down to V = 17** from a local tiled star
+  database (`data/stars17/`, ~45M stars — build it once with
+  `python3 tools/make_starcat.py --deep17`; no network is ever touched at runtime,
+  and for the packaged app the tile directory belongs in its data folder, e.g.
+  `~/Library/Application Support/SatIdentifier/stars17/` on macOS). Wider views
+  draw from the bundled catalogue (Gaia DR3 to V = 10.5, 549 037 stars, proper
+  motions applied; BSC5/HYG photometry at the bright end), shedding depth as the
+  field grows — m 10.5 at 3° down to m 4.5 at ≥ 48° — so a wide chart never drowns
+  in stars. The toolbar button pins a fixed limit instead; without the deep build,
+  narrow fields quietly fall back to the bundled catalogue and the footer says so.
+  Star dots follow **Stellarium's rendering law** (`StelSkyDrawer::computeRCMag`,
+  adapted): flux-law radius for the bright and middle magnitudes, and below a 1 px
+  floor the dot stops shrinking and *fades* — cubic luminance falloff to a cutoff —
+  so a deep field grades smoothly to invisibility at the limit instead of ending in
+  uniform minimum-size dots. Milky Way, Sun/Moon (with lunar phase) and
+  constellation-name overlays each keep their own toggle. The **All-Sky panel**
+  uses the bright-star set only (V ≤ 4.6, as SatObserver), with the same Milky Way
+  and Sun/Moon toggles. Neither view tints its background with twilight or
+  daylight.
 
 ## Accuracy — read this before trusting an identification
 
@@ -261,7 +275,8 @@ SatIdentifier.command      double-click launcher (dev mode)
 app/
   index.html               loads CSS + scripts in a fixed order
   css/app.css              the whole design system, dark theme
-  assets/stars_m9.bin      Tycho-2 to V=9.0, 130 183 stars, 1.3 MB
+  assets/stars_deep.bin    Gaia DR3 to V=10.5, 549 037 stars, 5.5 MB (preferred)
+  assets/stars_m9.bin      Tycho-2 to V=9.0, 130 183 stars, 1.3 MB (fallback)
   js/frames.js             coordinate frames, precession/nutation, refraction, TAN
   js/propagate.js          SGP4 wrapper and the topocentric solution
   js/scan.js               worker pool, merge, budgeting
@@ -274,16 +289,18 @@ app/
   js/allsky.js             all-sky context view with the FOV footprint
   js/state.js  util.js  clock.js  windows.js  sources.js  locations.js  satinfo.js
 tools/
-  make_starcat.py          builds the star catalogue asset (dev only)
+  make_starcat.py          builds the star catalogue asset; --deep17 builds the
+                           local V=17 tile set into data/stars17/ (gitignored)
   test_*.js                verification harnesses — see DEVLOG
 docs/                      screenshot
-data/                      state, caches, credentials (gitignored)
+data/                      state, caches, credentials, deep star tiles (gitignored)
 ```
 
 ## Credits
 
 Propagation: [satellite.js](https://github.com/shashwatak/satellite-js) (SGP4/SDP4).
-Stars: Tycho-2 (Hog+ 2000) via VizieR, plus BSC5/HYG bright-star photometry by way of
+Stars: Gaia DR3 (Gaia Collaboration 2022) and Tycho-2 (Hog+ 2000) via VizieR, plus
+BSC5/HYG bright-star photometry by way of
 [d3-celestial](https://github.com/ofrohn/d3-celestial). Catalogue data: CelesTrak,
 Space-Track, Mike McCants. The scan's structure — hoisting SGP4 init out of the time
 loop, rotating the pointing rather than the catalogue, and gating expensive work
