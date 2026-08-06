@@ -365,8 +365,39 @@
     return Math.round(Math.max(4.5, Math.min(10.5, m)) * 10) / 10;
   }
 
+  /** Magnitude -> dot {rad, lum}, or null when the star is too faint to draw.
+   *  Round 15, derived from Stellarium's StelSkyDrawer::computeRCMag and
+   *  adapted to a fixed-tone canvas. `mlim` is the DRAWN depth — what the live
+   *  catalogue actually delivered, not the wanted limit — so a deep request
+   *  served by the shallow bundled catalogue does not render its faintest
+   *  stars as if they were mid-range.
+   *  - Exposure shift (Stellarium's FOV factor): deep fields render like a
+   *    longer exposure — at an m17 limit an m17 star draws as m11 did at m11;
+   *    limits <= 11 keep the round-9 look unchanged above the faint floor.
+   *  - Flux-law radius (round 9): rr = 5.2 * 10^(-0.085 m), ~18%/mag.
+   *  - Faint end (the round-15 fix): below 1 px the dot STOPS SHRINKING and
+   *    fades instead — lum *= rr^3, Stellarium's cubic sub-floor falloff —
+   *    and vanishes below lum 0.02 (its 0.3-radius cutoff). The old hard
+   *    floors (0.7 px, alpha 0.42) turned the whole faint tail into identical
+   *    pepper; a limit is a fade, not a cliff.
+   *  - Bright end: radius past 6.5 px is sqrt-compressed (MAX_LINEAR_RADIUS
+   *    device), so Alcyone over a deep Pleiades field is prominent, not a blob. */
+  function starDot(mag, mlim) {
+    var m = mag - Math.max(0, (mlim == null ? 11 : mlim) - 11);
+    var rr = 5.2 * Math.pow(10, -0.085 * m);
+    var lum = Math.max(0, Math.min(1, 1.04 - 0.058 * m));
+    if (rr < 1) {
+      lum *= rr * rr * rr;
+      if (lum < 0.02) return null;
+      rr = 1;
+    } else if (rr > 6.5) {
+      rr = 6.5 + Math.sqrt(1 + rr - 6.5) - 1;
+    }
+    return { rad: rr, lum: lum };
+  }
+
   /** Fetch-completion callback for the deep field: the cached cone is stale the
-   *  moment better stars exist (or the footer needs to say the fetch failed). */
+   *  moment better stars exist (or the footer needs to say the load failed). */
   function onDeepField() { invalidateStars(); requestRender(); }
 
   /** Cone query with caching. Queries 1.2x wider than needed so the 10%-of-field
@@ -376,7 +407,8 @@
     if (!SAT.stars || typeof SAT.stars.cone !== 'function') {
       // stars.js absent or not loaded yet: an empty field, never a thrown render
       c.ok = false; c.stars = []; c.named = []; c.lines = []; c.cons = [];
-      c.effMag = magLimit; c.deepState = null; c.deepTrunc = false;
+      c.effMag = magLimit; c.drawnMag = magLimit;
+      c.deepState = null; c.deepTrunc = false;
       return c;
     }
     var slack = 0.10 * radiusDeg;
@@ -391,9 +423,9 @@
     var localLim = (typeof SAT.stars.localLimit === 'function')
       ? SAT.stars.localLimit() : Infinity;
     if (magLimit > localLim + 0.01 && typeof SAT.stars.deepField === 'function') {
-      // Wanted depth is beyond the bundled catalogue: ask the online deep field.
-      // While it loads (or after it failed) the local cone below still draws, so
-      // the chart never blanks — it just deepens when the fetch lands.
+      // Wanted depth is beyond the bundled catalogue: ask the deep tile set.
+      // While tiles load (or when the set is not built) the local cone below
+      // still draws, so the chart never blanks — it deepens when tiles land.
       var df = SAT.stars.deepField(ra0, dec0, q, magLimit, onDeepField);
       deepState = df.state;
       if (df.state === 'ready') {
@@ -404,6 +436,10 @@
     if (deepState !== 'ready') {
       try { stars = SAT.stars.cone(ra0, dec0, q, magLimit) || []; } catch (e) { stars = []; }
     }
+    // What depth is actually on screen: the star-dot law keys its exposure
+    // shift on this, so a deep request served shallow renders honestly.
+    var drawnMag = (deepState === 'ready') ? magLimit
+      : Math.min(magLimit, isFinite(localLim) ? localLim : magLimit);
     try {
       if (typeof SAT.stars.named === 'function') named = SAT.stars.named(ra0, dec0, q) || [];
     } catch (e) { named = []; }
@@ -423,7 +459,8 @@
     }
     c.ok = true; c.ra0 = ra0; c.dec0 = dec0;
     c.radiusDeg = radiusDeg; c.queryDeg = q; c.magLimit = magLimit;
-    c.effMag = magLimit; c.deepState = deepState; c.deepTrunc = deepTrunc;
+    c.effMag = magLimit; c.drawnMag = drawnMag;
+    c.deepState = deepState; c.deepTrunc = deepTrunc;
     c.stars = stars; c.named = named; c.lines = lines; c.cons = cons;
     return c;
   }
@@ -569,33 +606,18 @@
     }
 
     if (c.stars && cache.stars.length) {
-      // Round 14: the flux-law curve below was tuned for limits up to ~11; a
-      // deeper effective limit (the m17 online field) would park everything past
-      // m11 on the 0.7 px floor and the field would read as uniform dots. So for
-      // deep limits the faint tail is compressed into the tuned display range —
-      // m <= 9 renders identically at every depth, and m 9..mlim maps onto the
-      // display 9..11 ramp, so an m17 field still grades down to its limit.
-      var mlim = cache.effMag != null ? cache.effMag : 11;
-      var comp = mlim > 11 ? 2 / (mlim - 9) : 1;
+      // Round 15: dot size/brightness through starDot() — the Stellarium-derived
+      // law (see its comment). Keyed on the DRAWN depth, not the wanted one.
+      var mlim = cache.drawnMag != null ? cache.drawnMag : 11;
       for (i = 0; i < cache.stars.length; i++) {
         st = cache.stars[i];
+        var dot = starDot(st.mag, mlim);
+        if (!dot) continue;                  // faded out below the cutoff
         p = proj(st.raDeg, st.decDeg, ra0, dec0, t);
         if (!onScreen(p, 4)) continue;
-        // Radius/alpha vs magnitude, retuned in round 9 (was linear 3.8 - 0.30m):
-        // a linear ramp spends most of its range on the handful of m<3 stars and
-        // compresses m4-9 — where nearly every background star lives — into
-        // ~1.5 px, so the field read as same-size dots. Radius follows the flux
-        // law, shrinking ~18% per magnitude (area halves every ~1.8 mag): every
-        // step of the sequence is a visible step on screen. m0 = 5.2 px, m3 = 2.9,
-        // m5 = 2.0, m7 = 1.3, m9 = 0.9; capped at 6.5 px so Sirius is a star and
-        // not a blob, floored at 0.7 px / alpha 0.42 so the deep catalogue's
-        // m9-10.5 end stays visible rather than clipped away.
-        var m = (comp !== 1 && st.mag > 9) ? 9 + (st.mag - 9) * comp : st.mag;
-        var rad = Math.min(6.5, Math.max(0.7, 5.2 * Math.pow(10, -0.085 * m)));
-        var alpha = Math.max(0.42, Math.min(1, 1.04 - 0.058 * m));
         ctx.beginPath();
-        ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(225,235,255,' + alpha.toFixed(2) + ')';
+        ctx.arc(p.x, p.y, dot.rad, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(225,235,255,' + dot.lum.toFixed(3) + ')';
         ctx.fill();
       }
     }
@@ -1235,17 +1257,19 @@
     } else if (!SAT.stars) {
       foot.push('no star catalogue');
     }
-    // Star depth (round 14): always say what limit is actually drawn — in auto
-    // mode it changes with zoom, and while the online field loads or fails the
-    // drawn depth is NOT the wanted one, which is exactly when it must be said.
+    // Star depth (round 15): always say what limit is actually drawn — in auto
+    // mode it changes with zoom, and while deep tiles load (or when the tile
+    // set is not built) the drawn depth is NOT the wanted one, which is
+    // exactly when it must be said.
     if (cfg().stars && starCache.ok && starCache.effMag != null) {
       var mtxt = 'm' + starCache.effMag.toFixed(1) + (cfg().magAuto ? ' auto' : '');
       if (starCache.deepState === 'ready') {
-        mtxt += ' · Gaia online' + (starCache.deepTrunc ? ' (brightest 20k)' : '');
+        mtxt += ' · deep tiles' + (starCache.deepTrunc ? ' (brightest 20k)' : '');
       } else if (starCache.deepState === 'loading') {
-        mtxt += ' · fetching deep stars…';
+        mtxt += ' · loading deep tiles…';
       } else if (starCache.deepState === 'error') {
-        mtxt += ' · deep fetch failed — local stars';
+        mtxt += ' · deep tiles not built — m' +
+          (starCache.drawnMag != null ? starCache.drawnMag.toFixed(1) : '?') + ' local';
       }
       foot.push(mtxt);
     }
@@ -1562,9 +1586,11 @@
 
   SAT.chart = {
     init: init, requestRender: requestRender, fitView: fitView,
-    // Round 14: the adaptive star-depth law, pure and public — the CONTRACT
-    // documents it and tools/test_chart.js pins its anchor points.
+    // Rounds 14/15: the adaptive star-depth law and the Stellarium-derived
+    // dot law, pure and public — the CONTRACT documents both and
+    // tools/test_chart.js pins their anchor points.
     autoMagLimit: autoMagLimit,
+    starDot: starDot,
     // Pure geometry, exported for tools/test_chart.js. The orientation transform is
     // the one piece of this file that can be — and must be — verified without a
     // browser; everything else is paint.

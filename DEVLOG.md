@@ -757,6 +757,52 @@ occluded, macOS suspends rAF, so a queued render never fires and the footer
 reads stale — twenty minutes were spent hunting an onReady "bug" that was
 the window manager's throttling, not the code's.
 
+### Round 15 (2026-08-06) — local m17 tiles + Stellarium's star rendering
+
+Two corrections to round 14, both requested. First: **no online fetch** — the
+VizieR round-trip (6–16 s per cone, and an observatory machine may be offline)
+is replaced by a local tiled star database. Second: **the faint-star rendering
+was bad** — the round-14 compression squeezed m 12–17 onto the 0.7 px / 0.42
+alpha floors, so a deep field read as uniform pepper. The fix is Stellarium's.
+
+- **Local deep tile set** (`data/stars17/`, gitignored, ~45M stars — round-14's
+  own cone measurements put V ≤ 17 at ~900–1200 stars/deg², so the whole sky
+  fits in a few hundred MB; my earlier ~150M guess was G < 17 without the V
+  conversion): 4° dec bands × twelve 30° RA columns, single polar caps at
+  |dec| ≥ 86, each tile the same STR1 binary as the bundled asset. Built once
+  by `make_starcat.py --deep17` — VizieR box queries per tile with recursive
+  RA splitting when a galactic-plane tile trips the 64 MB guard, a retry per
+  request, resumable (existing tiles skipped), the BSC5 bright-star merge
+  applied per tile (Gaia genuinely lacks Vega and Sirius — a 2° field
+  containing Vega must still show Vega), and `index.json` written only at
+  completion so a half-built set reads as absent. Served by
+  `GET /api/stars/deep` (presence probe) and `GET /api/stars/tile/<name>`
+  (strict name regex — the path reaches the filesystem). The round-14
+  `/api/stars/cone` endpoint and its VizieR client are REMOVED.
+- **stars.js**: `deepField()` reimplemented over the tiles with the same
+  signature the chart already used — tile LRU (16 in memory), `tilesForCone()`
+  pure and unit-tested (RA wrap, polar caps), per-tile cones through the same
+  `coneInto` kernel `cone()` uses (one implementation, both catalogues), 404 ⇒
+  parked 'error' until the next page load. `parseStr1` factored out so tiles
+  and the bundled asset share one validated parser.
+- **Star rendering — Stellarium's law** (read from
+  `StelSkyDrawer::computeRCMag`): flux-law radius, and **below a 1 px floor
+  the dot stops shrinking and FADES — luminance × rr³ (Stellarium's cubic
+  sub-floor falloff), culled below 0.02** (its 0.3-radius cutoff analogue);
+  bright radii past 6.5 px sqrt-compressed (its MAX_LINEAR_RADIUS device);
+  deep limits get an exposure shift (its FOV factor): at an m17 limit an m17
+  star renders as m11 did at m11, so the field grades smoothly to invisibility
+  at whatever the limit is. `SAT.chart.starDot(mag, mlim)` is pure and pinned
+  by test_chart [13]; it keys on the DRAWN depth (`drawnMag`), not the wanted
+  one, so a deep request served by the shallow bundled catalogue renders
+  honestly. The old hard floors (0.7 px, alpha 0.42) are gone.
+
+test_stars [8b] rewritten for the tile set (scheme coverage incl. RA wrap +
+polar caps, probe/load/ready flow, in-tile mag filter, 404 parking);
+test_chart [13] pins the dot law's anchors (round-9 parity above the floor,
+cubic fade below it, exposure-shift equality m17@17 == m11@11, cutoff, bright
+compression, monotonicity).
+
 ## 13. Running the checks
 
 ```sh

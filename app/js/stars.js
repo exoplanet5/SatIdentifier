@@ -39,13 +39,15 @@
 
   // ---- loading -------------------------------------------------------------
 
-  /** Attach typed-array views to a fetched buffer, or throw if it is not our file.
+  /** Parse an STR1 buffer into typed-array views, or throw if it is not our file.
    *
    * Validating the magic and the length is not paranoia: a dev server that answers a
    * missing asset with an HTML 404 page returns a perfectly good ArrayBuffer, and
    * without these two checks it would become 130 000 NaN stars instead of a fallback.
+   * Shared by the bundled catalogue and the round-15 deep tiles — one parser, one
+   * set of validations.
    */
-  function adoptBuffer(buf) {
+  function parseStr1(buf) {
     if (buf.byteLength < HEADER_BYTES) throw new Error('truncated header');
     const magic = String.fromCharCode.apply(null, new Uint8Array(buf, 0, 4));
     if (magic !== 'STR1') throw new Error('bad magic "' + magic + '"');
@@ -58,14 +60,25 @@
     // Offsets 12, 12+4n and 12+8n are all multiples of 4, so every view is naturally
     // aligned — the whole reason the format is a structure of arrays rather than an
     // interleaved 10-byte record, which would be misaligned and force a slow DataView.
-    raArr = new Float32Array(buf, HEADER_BYTES, n);
-    decArr = new Float32Array(buf, HEADER_BYTES + 4 * n, n);
-    mag100Arr = new Int16Array(buf, HEADER_BYTES + 8 * n, n);
-    starCount = n;
+    return {
+      ra: new Float32Array(buf, HEADER_BYTES, n),
+      dec: new Float32Array(buf, HEADER_BYTES + 4 * n, n),
+      mag100: new Int16Array(buf, HEADER_BYTES + 8 * n, n),
+      n: n,
+      magLimit: head.getFloat32(8, true) || 9.0,
+    };
+  }
+
+  function adoptBuffer(buf) {
+    const t = parseStr1(buf);
+    raArr = t.ra;
+    decArr = t.dec;
+    mag100Arr = t.mag100;
+    starCount = t.n;
     deep = true;
     // The header's V limit (10.5 Gaia / 9.0 Tycho) tells the chart when a wanted
-    // depth is beyond this file and the online deep field is needed (round 14).
-    localMag = head.getFloat32(8, true) || 9.0;
+    // depth is beyond this file and the deep tile set is needed (round 15).
+    localMag = t.magLimit;
   }
 
   /** Build the same three arrays from SAT.stardata, sorted by declination.
@@ -118,28 +131,25 @@
 
   // ---- cone query ----------------------------------------------------------
 
-  /** First index whose declination is >= v (or > v when `strict`).
+  /** First index in `arr[0..n)` whose declination is >= v (or > v when `strict`).
    *  This binary search is the entire reason the builder sorts by declination. */
-  function bound(v, strict) {
-    let lo = 0, hi = starCount;
+  function bound(arr, n, v, strict) {
+    let lo = 0, hi = n;
     while (lo < hi) {
       const m = (lo + hi) >> 1;
-      if (strict ? decArr[m] <= v : decArr[m] < v) lo = m + 1;
+      if (strict ? arr[m] <= v : arr[m] < v) lo = m + 1;
       else hi = m;
     }
     return lo;
   }
 
-  /** Stars within radiusDeg of (ra0, dec0), brighter than magLimit.
-   *  Returns [{raDeg, decDeg, mag}, ...], at most MAX_RESULTS entries. */
-  function cone(ra0, dec0, radiusDeg, magLimit) {
-    const out = [];
-    if (!starCount || !(radiusDeg > 0)) return out;
-
+  /** The cone kernel over one STR1 array set, pushing matches into `out`.
+   *  Shared by cone() (the bundled catalogue) and deepField() (each tile),
+   *  so both sources go through exactly one tested implementation. */
+  function coneInto(t, ra0, dec0, radiusDeg, lim100, out) {
     const r0 = norm360(ra0);
-    const lim100 = (magLimit == null || !isFinite(magLimit)) ? 32767 : Math.round(magLimit * 100);
-    const lo = bound(dec0 - radiusDeg, false);
-    const hi = bound(dec0 + radiusDeg, true);
+    const lo = bound(t.dec, t.n, dec0 - radiusDeg, false);
+    const hi = bound(t.dec, t.n, dec0 + radiusDeg, true);
 
     // Bounding half-width in RA at the band's extreme declination. Rejecting on this
     // costs one subtraction where the exact test costs three trig calls, and the
@@ -154,8 +164,8 @@
     const d0 = dec0 * D2R, sd0 = Math.sin(d0), cd0 = Math.cos(d0);
 
     for (let i = lo; i < hi; i++) {
-      if (mag100Arr[i] > lim100) continue;
-      const ra = raArr[i];
+      if (t.mag100[i] > lim100) continue;
+      const ra = t.ra[i];
       let dRa = ra - r0;
       if (raHalf < 180) {
         const wrapped = Math.abs(((dRa + 540) % 360) - 180);
@@ -164,18 +174,32 @@
       // Exact cone membership, as a dot product against cos(radius): mathematically
       // identical to sep() <= radius but without the acos, which is not free at this
       // call count. Verified against frames.sep in tools/test_stars.js.
-      const dec = decArr[i] * D2R;
+      const dec = t.dec[i] * D2R;
       const dot = sd0 * Math.sin(dec) + cd0 * Math.cos(dec) * Math.cos(dRa * D2R);
-      if (dot >= cosR) out.push({ raDeg: ra, decDeg: decArr[i], mag: mag100Arr[i] / 100 });
+      if (dot >= cosR) out.push({ raDeg: ra, decDeg: t.dec[i], mag: t.mag100[i] / 100 });
     }
+  }
 
-    if (out.length > MAX_RESULTS) {
-      // Keep the brightest, not the first found. The arrays are dec-sorted, so
-      // truncating in scan order would shear the northern half off the field and
-      // look exactly like a chart bug; dropping the faintest degrades gracefully.
-      out.sort((a, b) => a.mag - b.mag);
-      out.length = MAX_RESULTS;
-    }
+  /** Keep the brightest MAX_RESULTS, not the first found. The arrays are
+   *  dec-sorted, so truncating in scan order would shear the northern half off
+   *  the field and look exactly like a chart bug; dropping the faintest
+   *  degrades gracefully. Returns true when a cut happened. */
+  function capBrightest(out) {
+    if (out.length <= MAX_RESULTS) return false;
+    out.sort((a, b) => a.mag - b.mag);
+    out.length = MAX_RESULTS;
+    return true;
+  }
+
+  /** Stars within radiusDeg of (ra0, dec0), brighter than magLimit.
+   *  Returns [{raDeg, decDeg, mag}, ...], at most MAX_RESULTS entries. */
+  function cone(ra0, dec0, radiusDeg, magLimit) {
+    const out = [];
+    if (!starCount || !(radiusDeg > 0)) return out;
+    const lim100 = (magLimit == null || !isFinite(magLimit)) ? 32767 : Math.round(magLimit * 100);
+    coneInto({ ra: raArr, dec: decArr, mag100: mag100Arr, n: starCount },
+      ra0, dec0, radiusDeg, lim100, out);
+    capBrightest(out);
     return out;
   }
 
@@ -234,81 +258,121 @@
     return out;
   }
 
-  // ---- online deep field (round 14) ----------------------------------------
-  // The chart's < 3° views want V = 17 — ~50M stars over the whole sky, two
-  // orders of magnitude past anything bundleable — so narrow cones come from the
-  // backend (/api/stars/cone -> Gaia DR3 via VizieR) on demand. A single slot is
-  // enough: the chart only ever looks at one place at a time.
-  //
-  // The fetch centre snaps to a 0.05° grid and the radius rounds UP to a bucket,
-  // with margin so the snapped disc still covers the true request. Both
-  // quantisations exist for cache hit rate: without them every wheel-zoom tick
-  // past the 10% slack would mint a new backend query, and the server's disk
-  // cache would never be re-hit across a session.
-  const DEEP_BUCKETS = [0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
-  const DEEP_GRID = 0.05;           // deg; snap margin is DEEP_GRID * ~0.71 < 0.06
-  const DEEP_RETRY_MS = 30000;      // failed-fetch backoff — offline must stay quiet
-  let deepSlot = null;              // {key, raDeg, decDeg, rDeg, mag, stars, truncated}
-  let deepInflight = null;          // key of the fetch in progress
-  let deepFail = null;              // {key, atMs} of the last failure
+  // ---- deep tile set (round 15) --------------------------------------------
+  // The chart's < 3° views want V = 17 — tens of millions of stars over the
+  // sky, far past anything bundleable OR committable — so the depth lives in a
+  // LOCAL tile set (data/stars17/, built once by make_starcat.py --deep17) and
+  // tiles are loaded on demand from the local server. The round-14 online
+  // VizieR fetch is gone: no runtime network access, and the states below are
+  // about local files only. Scheme (CONTRACT "Deep tile set"): 4° dec bands
+  // 0..44, single polar tiles at |dec| >= 86, twelve 30° RA columns elsewhere.
+  const TILE_BAND = 4, TILE_COLS = 12, TILE_COL_DEG = 30;
+  const TILE_LRU = 16;              // tiles kept in memory (~1 MB each)
+  let deepIdx = null;               // null = not probed; {present:false} | index
+  let deepProbing = false;
+  let deepBroken = false;           // tile 404/parse failure: treat as not built
+  const tileCache = new Map();      // name -> parsed STR1 arrays (insertion = LRU)
+  const tileFetching = new Set();
 
-  /** Online deep cone for the chart's narrow fields. Never throws, never rejects.
-   *  Returns {state:'ready'|'loading'|'error', stars, truncated}; while not
-   *  'ready' the caller draws the local catalogue instead. onReady fires at most
-   *  once per completed fetch (success or failure — the footer must update). */
+  /** Tile names covering a cone. Pure; handles the RA wrap and the polar caps.
+   *  Over-covers slightly (the RA half-width is taken at the band's extreme
+   *  declination) — an extra ~1 MB tile load beats a star missing at a corner. */
+  function tilesForCone(ra0, dec0, radiusDeg) {
+    const out = [];
+    const r0 = norm360(ra0);
+    const dLo = Math.max(-90, dec0 - radiusDeg);
+    const dHi = Math.min(90, dec0 + radiusDeg);
+    const b0 = Math.min(44, Math.max(0, Math.floor((dLo + 90) / TILE_BAND)));
+    const b1 = Math.min(44, Math.max(0, Math.floor((dHi + 90) / TILE_BAND)));
+    for (let b = b0; b <= b1; b++) {
+      if (b === 0 || b === 44) { out.push('t' + b + '_0.bin'); continue; }
+      const e0 = -90 + b * TILE_BAND;
+      const dMax = Math.min(89.9, Math.max(Math.abs(e0), Math.abs(e0 + TILE_BAND)));
+      const cd = Math.cos(dMax * D2R);
+      const sinR = Math.sin(Math.min(89.9, radiusDeg) * D2R);
+      if (sinR >= cd) {                       // cone wraps every RA at this band
+        for (let c = 0; c < TILE_COLS; c++) out.push('t' + b + '_' + c + '.bin');
+        continue;
+      }
+      const raHalf = Math.asin(sinR / cd) * R2D;
+      const k0 = Math.floor((r0 - raHalf) / TILE_COL_DEG);
+      const k1 = Math.floor((r0 + raHalf) / TILE_COL_DEG);
+      for (let k = k0; k <= k1; k++) {
+        const nm = 't' + b + '_' + (((k % TILE_COLS) + TILE_COLS) % TILE_COLS) + '.bin';
+        if (out.indexOf(nm) < 0) out.push(nm);
+      }
+    }
+    return out;
+  }
+
+  /** Evict least-recently-used tiles beyond the cap, never one needed now. */
+  function evictTiles(keep) {
+    for (const k of Array.from(tileCache.keys())) {
+      if (tileCache.size <= TILE_LRU) break;
+      if (keep.indexOf(k) < 0) tileCache.delete(k);
+    }
+  }
+
+  /** Deep star source for the chart's narrow fields, from the local tile set.
+   *  Never throws, never rejects. Returns {state:'ready'|'loading'|'error',
+   *  stars, truncated}; while not 'ready' the caller draws the bundled
+   *  catalogue instead. 'error' means the tile set is not built (or the local
+   *  server went away) — parked until the next page load, no retry storm.
+   *  onReady fires when the probe or an outstanding tile batch completes. */
   function deepField(ra0, dec0, radiusDeg, magLimit, onReady) {
-    if (deepSlot && deepSlot.mag === magLimit
-        && SAT.frames.sep(deepSlot.raDeg, deepSlot.decDeg, ra0, dec0) + radiusDeg
-           <= deepSlot.rDeg + 1e-6) {
-      return { state: 'ready', stars: deepSlot.stars, truncated: deepSlot.truncated };
-    }
-    let rB = DEEP_BUCKETS[DEEP_BUCKETS.length - 1];
-    for (let i = 0; i < DEEP_BUCKETS.length; i++) {
-      if (DEEP_BUCKETS[i] >= radiusDeg + 0.06) { rB = DEEP_BUCKETS[i]; break; }
-    }
-    const raQ = +(((Math.round(ra0 / DEEP_GRID) * DEEP_GRID) % 360).toFixed(2));
-    const decQ = +(Math.max(-90, Math.min(90, Math.round(dec0 / DEEP_GRID) * DEEP_GRID))
-      .toFixed(2));
-    const magQ = +magLimit.toFixed(1);
-    const key = raQ + '|' + decQ + '|' + rB + '|' + magQ;
+    const fail = { state: 'error', stars: null, truncated: false };
+    if (deepBroken || (deepIdx && !deepIdx.present)) return fail;
 
-    // Same disc as the slot but the coverage test above missed (radius right at
-    // the bucket edge): the slot IS this fetch — serve it rather than refetching.
-    if (deepSlot && deepSlot.key === key) {
-      return { state: 'ready', stars: deepSlot.stars, truncated: deepSlot.truncated };
-    }
-    if (deepInflight === key) return { state: 'loading', stars: null };
-    if (deepFail && deepFail.key === key && Date.now() - deepFail.atMs < DEEP_RETRY_MS) {
-      return { state: 'error', stars: null };
+    if (!deepIdx) {                           // presence probe, once per load
+      if (!deepProbing) {
+        deepProbing = true;
+        fetch('/api/stars/deep')
+          .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then((d) => { deepIdx = (d && d.present) ? d : { present: false }; })
+          .catch(() => { deepIdx = { present: false }; })
+          .then(() => { if (onReady) { try { onReady(); } catch (e) { /* ignore */ } } });
+      }
+      return { state: 'loading', stars: null, truncated: false };
     }
 
-    deepInflight = key;
-    fetch('/api/stars/cone?ra=' + raQ + '&dec=' + decQ + '&r=' + rB + '&mag=' + magQ)
-      .then((resp) => {
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        return resp.json();
-      })
-      .then((d) => {
-        if (deepInflight !== key) return;       // superseded by a newer request
-        deepInflight = null;
-        const rows = (d && d.stars) || [];
-        const stars = new Array(rows.length);
-        for (let i = 0; i < rows.length; i++) {
-          stars[i] = { raDeg: rows[i][0], decDeg: rows[i][1], mag: rows[i][2] / 100 };
-        }
-        deepSlot = { key: key, raDeg: raQ, decDeg: decQ, rDeg: rB, mag: magQ,
-                     stars: stars, truncated: !!(d && d.truncated) };
-        deepFail = null;
-        if (onReady) { try { onReady(); } catch (e) { /* caller's problem */ } }
-      })
-      .catch((e) => {
-        if (deepInflight !== key) return;
-        deepInflight = null;
-        deepFail = { key: key, atMs: Date.now() };
-        console.warn('SAT.stars.deepField: ' + (e && e.message));
-        if (onReady) { try { onReady(); } catch (e2) { /* ignore */ } }
-      });
-    return { state: 'loading', stars: null };
+    const names = tilesForCone(ra0, dec0, radiusDeg);
+    let pending = false;
+    for (const nm of names) {
+      if (tileCache.has(nm) || tileFetching.has(nm)) {
+        pending = pending || tileFetching.has(nm);
+        continue;
+      }
+      pending = true;
+      tileFetching.add(nm);
+      fetch('/api/stars/tile/' + nm)
+        .then((resp) => {
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          return resp.arrayBuffer();
+        })
+        .then((buf) => {
+          tileFetching.delete(nm);
+          tileCache.set(nm, parseStr1(buf));
+          evictTiles(names);
+          if (!tileFetching.size && onReady) { try { onReady(); } catch (e) { /* ignore */ } }
+        })
+        .catch((e) => {
+          tileFetching.delete(nm);
+          deepBroken = true;
+          console.warn('SAT.stars deep tile ' + nm + ': ' + (e && e.message));
+          if (onReady) { try { onReady(); } catch (e2) { /* ignore */ } }
+        });
+    }
+    if (pending) return { state: 'loading', stars: null, truncated: false };
+
+    // Every tile cached: merge per-tile cones through the shared kernel.
+    const lim100 = (magLimit == null || !isFinite(magLimit)) ? 32767 : Math.round(magLimit * 100);
+    const out = [];
+    for (const nm of names) {
+      const t = tileCache.get(nm);
+      tileCache.delete(nm); tileCache.set(nm, t);   // LRU touch
+      coneInto(t, ra0, dec0, radiusDeg, lim100, out);
+    }
+    return { state: 'ready', stars: out, truncated: capBrightest(out) };
   }
 
   // ---- status --------------------------------------------------------------
@@ -323,5 +387,8 @@
   /** The live catalogue's magnitude limit — what cone() can actually deliver. */
   const localLimit = () => localMag;
 
-  SAT.stars = { load, cone, named, constellationLines, deepField, isDeep, count, localLimit };
+  SAT.stars = {
+    load, cone, named, constellationLines,
+    deepField, tilesForCone, isDeep, count, localLimit,
+  };
 })();

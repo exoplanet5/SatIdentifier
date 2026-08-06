@@ -508,10 +508,10 @@ console.log('\n[11] extended pass track');
 // Adaptive star depth (round 14): the pure law, then the deep-field wiring —
 // a narrow auto-mode view must consult SAT.stars.deepField at m17, draw the
 // local cone while the fetch is out, and swap the online stars in when it lands.
-console.log('\n[12] adaptive star depth (round 14)');
+console.log('\n[12] adaptive star depth (rounds 14/15)');
 {
   const A = C.autoMagLimit;
-  ok('law: 2° field -> 17 (online)', A(2) === 17, 'got ' + A(2));
+  ok('law: 2° field -> 17 (deep tiles)', A(2) === 17, 'got ' + A(2));
   ok('law: 2.99° -> 17, strict boundary', A(2.99) === 17, 'got ' + A(2.99));
   ok('law: 3° -> 10.5 (local catalogue limit)', A(3) === 10.5, 'got ' + A(3));
   ok('law: 6° -> 9.0', A(6) === 9, 'got ' + A(6));
@@ -590,7 +590,7 @@ console.log('\n[12] adaptive star depth (round 14)');
   const cones0 = coneMags.length, arcs0 = calls.arc || 0;
   ok('deepField handed a completion callback', typeof onReadyCb === 'function');
   onReadyCb();
-  ok('online stars swapped in without a local re-cone',
+  ok('deep stars swapped in without a local re-cone',
     coneMags.length === cones0 && (calls.arc || 0) - arcs0 > 100,
     (coneMags.length - cones0) + ' new cones, ' + ((calls.arc || 0) - arcs0) + ' arcs');
 
@@ -610,6 +610,48 @@ console.log('\n[12] adaptive star depth (round 14)');
   ok('wide auto field stays local and shallow',
     deepCalls.length === deeps1 && wideMag < 10.5 + 1e-9 && wideMag >= 4.5,
     'cone mag ' + wideMag);
+}
+
+// ---------------------------------------------------------------- test 13
+// Star dot law (round 15) — Stellarium's computeRCMag design on a canvas:
+// flux-law radius above a 1 px floor, cubic luminance fade below it, hard
+// cutoff, sqrt-compressed bright end, exposure shift for deep limits.
+console.log('\n[13] starDot — Stellarium-derived dot law');
+{
+  const S = C.starDot;
+  let d = S(0, 11);
+  close('m0 at m11 limit: flux-law radius', d.rad, 5.2, 1e-9, 'px');
+  ok('m0 full luminance', d.lum === 1, 'lum ' + d.lum);
+  d = S(5, 9);
+  close('m5 radius matches round 9', d.rad, 5.2 * Math.pow(10, -0.425), 1e-9, 'px');
+  close('m5 luminance matches round 9', d.lum, 1.04 - 0.29, 1e-9, '');
+  d = S(9, 9);
+  ok('faint floor: radius pinned at 1 px', d.rad === 1, 'rad ' + d.rad);
+  ok('faint floor: luminance faded cubically',
+    Math.abs(d.lum - (1.04 - 0.058 * 9) * Math.pow(5.2 * Math.pow(10, -0.765), 3)) < 1e-9,
+    'lum ' + d.lum.toFixed(4));
+
+  // the exposure shift: a star AT the limit renders the same at every deep limit
+  const at17 = S(17, 17), at11 = S(11, 11);
+  ok('m17 at m17 == m11 at m11 (exposure shift)',
+    at17.rad === at11.rad && Math.abs(at17.lum - at11.lum) < 1e-12,
+    'lum ' + at17.lum.toFixed(4));
+  ok('a star at the limit is nearly invisible', at17.lum < 0.1, 'lum ' + at17.lum.toFixed(4));
+  ok('below the cutoff is culled, not drawn', S(20, 17) === null);
+
+  d = S(0, 17);
+  ok('bright end sqrt-compressed, not a blob', d.rad > 6.5 && d.rad < 9.5 && d.lum === 1,
+    'rad ' + d.rad.toFixed(2));
+
+  // monotone: fainter never gets bigger or brighter (until it disappears)
+  let mono = true, pr = Infinity, pl = Infinity;
+  for (let m = -1; m <= 18; m += 0.25) {
+    const s = S(m, 17);
+    if (!s) break;
+    if (s.rad > pr + 1e-9 || s.lum > pl + 1e-9) mono = false;
+    pr = s.rad; pl = s.lum;
+  }
+  ok('radius and luminance monotone in magnitude', mono);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : '\nall checks passed\n');

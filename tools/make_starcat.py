@@ -270,6 +270,152 @@ def parse_gaia_rows(text, v_limit):
     return stars, skipped
 
 
+# ---------------------------------------------------------------------------
+# Deep tile set (round 15): data/stars17/ — Gaia DR3 to V = 17, tiled
+#
+# ~35-45M stars over the sky (measured ~900-1200/deg^2 at V<=17 in round-14
+# cones), several hundred MB — buildable locally, far past committable. The
+# frontend loads tiles on demand for < 3 deg views; see CONTRACT "Deep tile
+# set" for the binding scheme: 4 deg dec bands 0..44, single polar tiles at
+# |dec| >= 86, twelve 30 deg RA columns elsewhere, names t<band>_<col>.bin,
+# each tile the same STR1 binary as the bundled asset.
+# ---------------------------------------------------------------------------
+
+DEEP_MAG_LIMIT = 17.0
+DEEP_BAND_DEG = 4
+DEEP_COL_DEG = 30
+DEEP_FETCH_PAUSE = 0.3          # courtesy pause between the ~520 VizieR requests
+
+
+def deep_tiles():
+    """Yield (name, ra0, ra1, de0, de1) for every tile in the scheme."""
+    for band in range(45):
+        de0 = -90 + band * DEEP_BAND_DEG
+        de1 = de0 + DEEP_BAND_DEG
+        if band in (0, 44):                     # polar caps: one tile, all RA
+            yield ("t%d_0.bin" % band, 0.0, 360.0, de0, de1)
+            continue
+        for col in range(12):
+            yield ("t%d_%d.bin" % (band, col),
+                   col * DEEP_COL_DEG, (col + 1) * DEEP_COL_DEG, de0, de1)
+
+
+def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0):
+    """Gaia DR3 rows in an RA/Dec box as TSV text, splitting in RA when the
+    response trips the size guard (the Baade-window class of tile).
+
+    One transient-network retry per request; a second failure raises so the
+    resumable outer loop can be re-run.
+    """
+    query = {
+        "-source": GAIA_SOURCE,
+        "-out": "RA_ICRS,DE_ICRS,pmRA,pmDE,Gmag,BP-RP",
+        "RA_ICRS": "%.4f..%.4f" % (ra0, ra1),
+        "DE_ICRS": "%.4f..%.4f" % (de0, de1),
+        "Gmag": "<%.2f" % g_limit,
+        "-out.max": "unlimited",
+    }
+    url = VIZIER_URL + "?" + urllib.parse.urlencode(query)
+    for attempt in (1, 2):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            t0 = time.time()
+            with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+                raw = resp.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                raise OverflowError()
+            print("    %7.1f kB in %5.1f s  RA %.1f..%.1f" %
+                  (len(raw) / 1e3, time.time() - t0, ra0, ra1), flush=True)
+            return raw.decode("utf-8", "replace")
+        except OverflowError:
+            if depth >= 4:
+                raise RuntimeError("box still over %d MB after 4 RA splits" %
+                                   (MAX_BYTES >> 20))
+            mid = 0.5 * (ra0 + ra1)
+            print("    over size guard — splitting RA at %.2f" % mid, flush=True)
+            return (fetch_gaia_box(ra0, mid, de0, de1, g_limit, depth + 1) +
+                    fetch_gaia_box(mid, ra1, de0, de1, g_limit, depth + 1))
+        except (urllib.error.URLError, OSError) as e:
+            if attempt == 2:
+                raise
+            print("    retrying after %s" % e, flush=True)
+            time.sleep(5)
+
+
+def build_deep17(out_dir, bright_path, vmax):
+    """Build the deep tile set. Resumable: existing tiles are skipped, and the
+    index (the frontend's presence signal) is written only when every tile is
+    done, so a half-finished build never reads as present."""
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    epoch_yr = 2000.0 + (time.time() - 946728000.0) / 31557600.0
+
+    # Whole bright catalogue, not just <= 4.6: Gaia lacks its saturated
+    # brightest stars entirely (Vega, Sirius class), and the deep tiles REPLACE
+    # the bundled catalogue on screen, so every bright star must be present in
+    # the tile that contains it.
+    bright = load_bright(bright_path) if pathlib.Path(bright_path).exists() else []
+
+    global TARGET_EPOCH
+    TARGET_EPOCH = epoch_yr          # parse_gaia_rows propagates PM to this
+    total = 0
+    names = []
+    todo = list(deep_tiles())
+    for i, (name, ra0, ra1, de0, de1) in enumerate(todo):
+        names.append(name)
+        tile_path = out / name
+        if tile_path.exists():
+            total += (tile_path.stat().st_size - 12) // 10
+            continue
+        print("[%3d/%d] %s  RA %g..%g Dec %g..%g" %
+              (i + 1, len(todo), name, ra0, ra1, de0, de1), flush=True)
+        text = fetch_gaia_box(ra0, ra1, de0, de1, vmax + 0.5)
+        stars, skipped = parse_gaia_rows(text, vmax)
+        # clip the bright merge to the tile (with margin for the match radius)
+        m = MATCH_ARCSEC / 3600.0 * 2
+        sub = [s for s in bright
+               if de0 - m <= s[1] <= de1 + m
+               and (ra1 - ra0 >= 360 or (ra0 - m <= s[0] <= ra1 + m))]
+        if sub:
+            stars, rephot, added = merge_bright(stars, sub)
+        n, nbytes = write_tile(stars, tile_path, vmax)
+        total += n
+        print("    %d stars (%d skipped), %.1f kB" % (n, skipped, nbytes / 1e3),
+              flush=True)
+        time.sleep(DEEP_FETCH_PAUSE)
+
+    index = {
+        "magLimit": vmax, "count": total, "tiles": len(names),
+        "builtIso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "epochYr": round(epoch_yr, 3),
+    }
+    tmp = out / "index.json.tmp"
+    tmp.write_text(json.dumps(index), encoding="utf-8")
+    tmp.replace(out / "index.json")
+    print("deep tile set complete: %d stars in %d tiles, index written"
+          % (total, len(names)), flush=True)
+    return 0
+
+
+def write_tile(stars, path, mag_limit):
+    """STR1 tile: same layout as write_binary but with the tile's own V cut in
+    the header and no global-state coupling."""
+    stars.sort(key=lambda s: s[1])
+    n = len(stars)
+    buf = bytearray()
+    buf += b"STR1"
+    buf += struct.pack("<I", n)
+    buf += struct.pack("<f", mag_limit)
+    buf += struct.pack("<%df" % n, *[s[0] for s in stars])
+    buf += struct.pack("<%df" % n, *[s[1] for s in stars])
+    buf += struct.pack("<%dh" % n, *[max(-32768, min(32767, round(s[2] * 100)))
+                                     for s in stars])
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(bytes(buf))
+    tmp.replace(path)
+    return n, len(buf)
+
+
 def fetch_tycho2(source, vt_limit):
     """Download rows of `source` with VTmag < vt_limit as TSV text.
 
@@ -413,7 +559,16 @@ def main():
                          "proper motions applied to epoch %.1f" % TARGET_EPOCH)
     ap.add_argument("--vmax", type=float, default=None,
                     help="V limit written to the file (default 9.0 tycho2 / 10.5 gaia)")
+    ap.add_argument("--deep17", action="store_true",
+                    help="build the deep tile set (default out: data/stars17/, "
+                         "gitignored; V <= 17; resumable — rerun to continue)")
     args = ap.parse_args()
+
+    if args.deep17:
+        vmax = args.vmax if args.vmax else DEEP_MAG_LIMIT
+        out_dir = args.out if args.out != str(DEFAULT_OUT) \
+            else str(SCRIPT_DIR.parent / "data" / "stars17")
+        return build_deep17(out_dir, args.bright, vmax)
 
     global MAG_LIMIT
     if args.source == "gaia":
