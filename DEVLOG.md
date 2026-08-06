@@ -909,6 +909,32 @@ At user request, while the round-18 tile build ran:
   `tracks capped at 500` / `tracks off`) is removed — with the deliberate
   loss of the track-cap truncation note, accepted as part of the request.
 
+### Round 20 (2026-08-06) — tracks toggle, MW off the chart, NORAD in labels
+
+Three sky-chart requests in one round:
+
+- **Satellite tracks toggle** (`settings.chart.tracks`, default on): a ↗
+  button directly after the label toggle Ab, mirroring the All-Sky's. Off
+  hides BOTH trail layers (the dim whole-timespan track and the bright
+  in-FOV path with its motion arrow) and leaves markers + labels only — the
+  clean view for holding label positions against a frame. The extended
+  tracks are still *built* with the toggle off, because the off-field marker
+  position follows them; only the strokes are skipped. Verified live on a
+  390-crossing GEO-belt scan: trails to zero, every marker and label stayed.
+- **Milky Way removed from the chart** — the toggle *and* the layer (the
+  gnomonic isophote port, ~120 lines). It was off by default, invisible in
+  any telescope-sized field, and removing only the button would have locked
+  whatever value was saved. The glow lives on in the All-Sky panel, whose
+  own port is untouched; `vendor/mwdata.js` stays for it. A saved
+  `settings.chart.mw` is ignored.
+- **Labels read `NAME [NORAD]`** via the new pure export
+  `SAT.chart.satLabel(cr)` (test_chart [14]). The bracket always prints the
+  full decimal catalogue number: every ingest path (Space-Track OMM,
+  CelesTrak, McCants, paste) runs through server-side `catnum`, which
+  decodes Alpha-5 at parse time — 'A0000' arrives as the integer 100000 —
+  so the letter form can never reach a label. Confirmed live on
+  analyst-range objects: `TBA - TO BE ASSIGNED [270375]`.
+
 ## 13. Running the checks
 
 ```sh

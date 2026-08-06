@@ -77,11 +77,13 @@
     if (c.constLines == null) c.constLines = true;
     if (c.constNames == null) c.constNames = false;
     if (c.sunMoon == null) c.sunMoon = true;
-    if (c.mw == null) c.mw = false;             // Milky Way layer, off by default
+    // round 20: chart.mw retired — the Milky Way layer lives in All-Sky only;
+    // a stored chart.mw is simply never read again.
     if (c.magAuto == null) c.magAuto = true;    // round 14: depth follows the field
     if (c.magLimit == null) c.magLimit = 9.0;   // the pinned MANUAL limit
     if (c.grid == null) c.grid = true;
     if (c.labels == null) c.labels = true;
+    if (c.tracks == null) c.tracks = true;      // round 20: off = markers+labels only
     if (c.padFrac == null) c.padFrac = 0.7;
     return c;
   }
@@ -660,125 +662,6 @@
     }
   }
 
-  // ---- Milky Way -----------------------------------------------------------
-  // Faint isophotes (d3-celestial contours via vendor/mwdata.js), ported from the
-  // SatObserver polar chart to the gnomonic frame. Two things need care:
-  //  1. The gnomonic radius diverges at 90° from the tangent point and the far
-  //     hemisphere has no image at all, so every vertex is clamped radially to an
-  //     off-screen rim (direction from centre preserved) — fills stay finite and
-  //     are exact inside the viewport.
-  //  2. Same fill-parity trap as the polar chart: when a ring's projected outline
-  //     wraps the chart, canvas fills the wrong side. The north galactic pole is a
-  //     point known to be OUTSIDE every isophote; any ring whose outline contains
-  //     its projection gets an extra rim-circle subpath to flip even-odd parity
-  //     back. (SatObserver's construction, different projection, same reasoning.)
-  // Documented deviation (CONTRACT): no twilight fade — the chart background never
-  // changes with the sun, so the layer draws at full contour alpha whenever on.
-  var MW_GP_RA = 192.859, MW_GP_DEC = 27.128; // north galactic pole (J2000)
-
-  function mwVecs(mw) {
-    return mw.levels.map(function (lev) {
-      return lev.rings.map(function (ring) {
-        var v = new Float64Array(ring.length * 3);
-        for (var i = 0; i < ring.length; i++) {
-          var ra = ring[i][0] * D2R, de = ring[i][1] * D2R, cd = Math.cos(de);
-          v[i * 3] = cd * Math.cos(ra);
-          v[i * 3 + 1] = cd * Math.sin(ra);
-          v[i * 3 + 2] = Math.sin(de);
-        }
-        return v;
-      });
-    });
-  }
-
-  function pointInPoly(px, py, pts) {
-    var inside = false;
-    for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-      var yi = pts[i].y, yj = pts[j].y;
-      if ((yi > py) !== (yj > py) &&
-          px < (pts[j].x - pts[i].x) * (py - yi) / (yj - yi) + pts[i].x) inside = !inside;
-    }
-    return inside;
-  }
-
-  function drawMW(ra0, dec0, t) {
-    var mw = SAT.mwdata;
-    if (!mw || !cfg().mw) return;
-    if (!mw._vecs) mw._vecs = mwVecs(mw);
-    var ra = ra0 * D2R, de = dec0 * D2R;
-    // tangent-frame basis: boresight b, east e (b × pole plane), north n
-    var bx = Math.cos(ra) * Math.cos(de), by = Math.sin(ra) * Math.cos(de), bz = Math.sin(de);
-    var ex = -Math.sin(ra), ey = Math.cos(ra);                        // ez = 0
-    var nx = -Math.cos(ra) * Math.sin(de), ny = -Math.sin(ra) * Math.sin(de), nz = Math.cos(de);
-    var RIM = 2.5 * (cssW + cssH);           // px — beyond every visible pixel
-    var fMin = 0.02;                          // ~cos 88.9°: off-rim anyway
-    // equatorial unit vector -> chart point (clamped gnomonic; see header)
-    function pt(x, y, z) {
-      var f = x * bx + y * by + z * bz;
-      var u = x * ex + y * ey;               // ·east, sin-scaled
-      var v = x * nx + y * ny + z * nz;      // ·north
-      var p = (f > fMin)
-        ? skyToScreen(u / f * R2D, v / f * R2D, t)
-        : skyToScreen(u * 1e4, v * 1e4, t);  // horizon/far side: direction only
-      var dx = p.x - t.cx, dy = p.y - t.cy;
-      var d = Math.hypot(dx, dy);
-      if (d > RIM) { p.x = t.cx + dx / d * RIM; p.y = t.cy + dy / d * RIM; }
-      return p;
-    }
-    // long projected chords are subdivided along the great circle, so no edge can
-    // slash across the field on its way to the rim
-    var mc = 0.30 * Math.min(cssW, cssH);
-    var maxChord2 = mc * mc;
-    function subdiv(out, x0, y0, z0, p0, x1, y1, z1, p1, depth) {
-      var dx = p1.x - p0.x, dy = p1.y - p0.y;
-      if (depth > 0 && dx * dx + dy * dy > maxChord2) {
-        var xm = x0 + x1, ym = y0 + y1, zm = z0 + z1;
-        var n = Math.sqrt(xm * xm + ym * ym + zm * zm);
-        if (n > 1e-9) {
-          xm /= n; ym /= n; zm /= n;
-          var pm = pt(xm, ym, zm);
-          subdiv(out, x0, y0, z0, p0, xm, ym, zm, pm, depth - 1);
-          subdiv(out, xm, ym, zm, pm, x1, y1, z1, p1, depth - 1);
-          return;
-        }
-      }
-      out.push(p1);
-    }
-    var gd = MW_GP_DEC * D2R, gr = MW_GP_RA * D2R, gc = Math.cos(gd);
-    var gpP = pt(gc * Math.cos(gr), gc * Math.sin(gr), Math.sin(gd));
-    var RIMC = RIM * 1.2;
-    ctx.save();
-    // soften the isophote steps into a diffuse glow where the browser allows
-    var blur = typeof ctx.filter === 'string';
-    if (blur) ctx.filter = 'blur(' + (Math.min(cssW, cssH) * 0.01).toFixed(1) + 'px)';
-    for (var L = 0; L < mw.levels.length; L++) {
-      var lev = mw.levels[L];
-      ctx.beginPath();
-      for (var ri = 0; ri < lev.rings.length; ri++) {
-        var v = mw._vecs[L][ri];
-        var n = v.length / 3;
-        var p0 = pt(v[0], v[1], v[2]);
-        var pts = [p0];
-        for (var i = 1; i <= n; i++) {
-          var j = (i % n) * 3, k = ((i - 1) * 3);
-          var p1 = pt(v[j], v[j + 1], v[j + 2]);
-          subdiv(pts, v[k], v[k + 1], v[k + 2], p0, v[j], v[j + 1], v[j + 2], p1, 4);
-          p0 = p1;
-        }
-        ctx.moveTo(pts[0].x, pts[0].y);
-        for (var q = 1; q < pts.length; q++) ctx.lineTo(pts[q].x, pts[q].y);
-        ctx.closePath();
-        if (pointInPoly(gpP.x, gpP.y, pts)) {
-          ctx.moveTo(t.cx + RIMC, t.cy);
-          ctx.arc(t.cx, t.cy, RIMC, 0, Math.PI * 2);
-        }
-      }
-      ctx.fillStyle = 'rgba(172,192,222,' + lev.a + ')';
-      ctx.fill('evenodd');
-    }
-    if (blur) ctx.filter = 'none';
-    ctx.restore();
-  }
 
   function drawFov(t) {
     var o = SAT.state.obs;
@@ -967,6 +850,15 @@
     ctx.stroke();
   }
 
+  /** The marker label: `NAME [NORAD]`. The catalogue number is always the full
+   *  decimal integer — Alpha-5 fields are decoded at parse time on the server
+   *  ('A0000' arrives as 100000), so the bracket never shows the letter form. */
+  function satLabel(cr) {
+    var lbl = cr.name || '';
+    if (cr.norad != null) lbl += (lbl ? ' ' : '') + '[' + cr.norad + ']';
+    return lbl;
+  }
+
   /** Place a motion arrow ~60% along the path, searching forward for a segment
    *  that is on screen and long enough (>= 6 px) to define a direction. */
   function arrowOnPath(path, col) {
@@ -994,6 +886,8 @@
 
     // Layer 1: the dim whole-timespan tracks, under everything else. Drawn first
     // so the bright in-FOV segments and the FOV outline always win visually.
+    // With tracks off the build still runs — the off-field marker position
+    // follows the extended track — only the strokes are skipped.
     ctx.lineWidth = 1;
     for (i = 0; i < list.length; i++) {
       var crx = list[i];
@@ -1003,7 +897,7 @@
         extBudget--;
       }
       var ext = extTrackOf(crx, loc);
-      if (!ext) continue;
+      if (!ext || !c.tracks) continue;
       var ecol = hexA(typeColorOf(crx), 0.16);
       var prev = null;
       for (j = 0; j < ext.length; j++) {
@@ -1034,21 +928,23 @@
       // across the field between tEnter and tExit, drawn from the scan's own samples
       // so curvature is preserved. The already-swept portion is dimmed, so what
       // remains bright is what is still to come at the current clock time.
-      ctx.lineWidth = 1.3;
-      for (j = 1; j < path.length; j++) {
-        var a = projAt(path[j - 1].raDeg, path[j - 1].decDeg, path[j - 1].t);
-        var b = projAt(path[j].raDeg, path[j].decDeg, path[j].t);
-        if (!a || !b) continue;
-        if (!onScreen(a, 400) && !onScreen(b, 400)) continue;
-        var swept = (path[j - 1].t + path[j].t) / 2 <= nowMs;
-        ctx.strokeStyle = hexA(col, swept ? 0.3 : 0.85);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
+      if (c.tracks) {
+        ctx.lineWidth = 1.3;
+        for (j = 1; j < path.length; j++) {
+          var a = projAt(path[j - 1].raDeg, path[j - 1].decDeg, path[j - 1].t);
+          var b = projAt(path[j].raDeg, path[j].decDeg, path[j].t);
+          if (!a || !b) continue;
+          if (!onScreen(a, 400) && !onScreen(b, 400)) continue;
+          var swept = (path[j - 1].t + path[j].t) / 2 <= nowMs;
+          ctx.strokeStyle = hexA(col, swept ? 0.3 : 0.85);
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+        // which way is it moving — one arrowhead per trail
+        arrowOnPath(path, hexA(col, 0.9));
       }
-      // which way is it moving — one arrowhead per trail
-      arrowOnPath(path, hexA(col, 0.9));
 
       // Current position. Inside the crossing window the scan's fine path is the
       // authority; outside it (the object has left the field, or not yet arrived)
@@ -1076,8 +972,7 @@
       }
       if (c.labels) {
         ctx.font = '11px ' + MONO;
-        var lbl = cr.name || String(cr.norad || '');
-        haloText(lbl, p.x + 9, p.y, '#ffffff');
+        haloText(satLabel(cr), p.x + 9, p.y, '#ffffff');
       }
       if (!inField) ctx.globalAlpha = 1;
       markerHits.push({ id: cr.satId, x: p.x, y: p.y });
@@ -1210,7 +1105,6 @@
     var t = transform();
     curScale = t.scale; curCx = t.cx; curCy = t.cy;
 
-    drawMW(ra0, dec0, t);
     if (cfg().grid) drawGrid(ra0, dec0, t);
     drawStars(ra0, dec0, t);
     drawSunMoon(ra0, dec0, t, date);
@@ -1452,12 +1346,13 @@
     var bar = SAT.util.el('div', { class: 'chart-toolbar' }, [
       tbtn('sunMoon', '☉', 'sun & moon (moon shows phase)', toggleLayer('sunMoon')),
       tbtn('stars', '✶', 'stars', toggleLayer('stars')),
-      tbtn('mw', 'MW', 'Milky Way glow', toggleLayer('mw')),
       tbtn('starNames', 'SN', 'star names (fields wider than 5°)', toggleLayer('starNames')),
       tbtn('constLines', 'CL', 'constellation lines (fields wider than 5°)', toggleLayer('constLines')),
       tbtn('constNames', 'CN', 'constellation names (fields wider than 5°)', toggleLayer('constNames')),
       tbtn('grid', '#', 'RA/Dec grid', toggleLayer('grid')),
       tbtn('labels', 'Ab', 'satellite labels', toggleLayer('labels')),
+      tbtn('tracks', '↗', 'satellite tracks — off leaves markers and labels only',
+        toggleLayer('tracks')),
       tbtn('mag', 'mA', 'star magnitude limit — mA adapts to the field '
         + '(deep tiles to m13 below 3°, shallower as the field grows)', function () {
         var c = cfg();
@@ -1496,12 +1391,12 @@
     if (!toolBtns.stars) return;
     toolBtns.sunMoon.classList.toggle('chart-on', !!c.sunMoon);
     toolBtns.stars.classList.toggle('chart-on', !!c.stars);
-    toolBtns.mw.classList.toggle('chart-on', !!c.mw);
     toolBtns.starNames.classList.toggle('chart-on', !!c.starNames);
     toolBtns.constLines.classList.toggle('chart-on', !!c.constLines);
     toolBtns.constNames.classList.toggle('chart-on', !!c.constNames);
     toolBtns.grid.classList.toggle('chart-on', !!c.grid);
     toolBtns.labels.classList.toggle('chart-on', !!c.labels);
+    toolBtns.tracks.classList.toggle('chart-on', !!c.tracks);
     toolBtns.mag.textContent = c.magAuto ? 'mA' : 'm' + c.magLimit;
   }
 
@@ -1554,6 +1449,9 @@
     // tools/test_chart.js pins their anchor points.
     autoMagLimit: autoMagLimit,
     starDot: starDot,
+    // Round 20: the marker-label format ('NAME [NORAD]', always decimal digits
+    // — Alpha-5 is decoded server-side), pure and pinned by tools/test_chart.js.
+    satLabel: satLabel,
     // Pure geometry, exported for tools/test_chart.js. The orientation transform is
     // the one piece of this file that can be — and must be — verified without a
     // browser; everything else is paint.

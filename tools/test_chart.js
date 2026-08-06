@@ -669,5 +669,20 @@ console.log('\n[13] starDot — Stellarium-derived dot law');
   ok('radius and luminance monotone in magnitude', mono);
 }
 
+console.log('\n[14] satLabel — marker label format (round 20)');
+{
+  const L = C.satLabel;
+  ok('name + norad', L({ name: 'ISS (ZARYA)', norad: 25544 }) === 'ISS (ZARYA) [25544]',
+    L({ name: 'ISS (ZARYA)', norad: 25544 }));
+  // Alpha-5 range: the server decodes 'A0000' to 100000 at parse time, so the
+  // label must print the full decimal number, never the letter form
+  ok('Alpha-5-range norad prints as digits',
+    L({ name: 'OBJECT AA', norad: 100000 }) === 'OBJECT AA [100000]',
+    L({ name: 'OBJECT AA', norad: 100000 }));
+  ok('name-less object shows just the bracket', L({ norad: 41765 }) === '[41765]');
+  ok('norad-less crossing falls back to the bare name', L({ name: 'UNKNOWN' }) === 'UNKNOWN');
+  ok('empty crossing yields empty string', L({}) === '');
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : '\nall checks passed\n');
 process.exit(failures ? 1 : 0);

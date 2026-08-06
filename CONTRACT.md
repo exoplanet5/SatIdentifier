@@ -30,7 +30,7 @@ Namespace stays `SAT` (not `SATID`) so modules ported from SatObserver work unch
     assets/stars_m9.bin      # deep star catalogue, ~120k stars to V=9.0 (binary, ~1.4 MB)
     js/vendor/satellite.min.js   # satellite.js 5.0 UMD -> global `satellite`
     js/vendor/starcat.js         # bright stars + constellation lines/names (from SatObserver)
-    js/vendor/mwdata.js          # Milky Way isophotes -> SAT.mwdata (from SatObserver)
+    js/vendor/mwdata.js          # Milky Way isophotes -> SAT.mwdata (All-Sky only since round 20)
     js/util.js               # SAT.util      (port from SatObserver + additions)
     js/frames.js             # SAT.frames    NEW  (AGENT F)
     js/windows.js            # SAT.windows   (port, unchanged)
@@ -309,12 +309,15 @@ SAT.state.locations = [{ id, name, kind, latDeg, lonDeg, altM, norad, active: fa
 
 SAT.state.settings = {
   chart:  { stars:true, starNames:false, constLines:true, constNames:false,
-            sunMoon:true, mw:false, grid:true, magAuto:true, magLimit:9.0,
-            labels:true, padFrac:0.7 },
+            sunMoon:true, grid:true, magAuto:true, magLimit:9.0,
+            labels:true, tracks:true, padFrac:0.7 },
   // round 14: magAuto (default true) makes the chart's star depth follow the view
   // span (see the chart section); magLimit is the pinned MANUAL limit, used only
   // when magAuto is false. Old saved states lack magAuto and so pick up the
   // adaptive default on first load — that migration is deliberate.
+  // round 20: chart.mw retired — the chart has no Milky Way layer any more (the
+  // glow lives only in the All-Sky panel); a stored chart.mw is ignored.
+  // tracks (default true) draws the satellite trails; off leaves markers+labels.
   allsky: { eastLeft:true, elStep:30, stars:true, sunMoon:true, mw:false },
   // round 12: allsky.magLimit retired — the All-Sky star field is the bright
   // catalogue only (see its panel section); a stored value is ignored.
@@ -922,15 +925,12 @@ view and gets the largest default window.
     the All-Sky keeps its own SatObserver dot law and is NOT changed by round
     15). Star names, constellation lines AND constellation names (`constNames`,
     round 11) draw on fields wider than 5°.
-  - **Milky Way** isophote layer (`settings.chart.mw`, default off): the d3-celestial
-    contours from `vendor/mwdata.js`, ported from the SatObserver polar chart to the
-    gnomonic frame — far-hemisphere / near-90° vertices are clamped radially to an
-    off-screen rim so fills stay finite, and any ring whose projected outline
-    swallows the north galactic pole (a point outside every isophote) gets a
-    rim-circle subpath to flip even-odd parity back, exactly as in SatObserver.
-    **Documented deviation from SatObserver:** NO twilight/daylight sky tint and no
-    MW twilight fade — the chart is a J2000 field view, not a local-sky view, so its
-    background stays the fixed dark theme regardless of the sun.
+  - **Milky Way — REMOVED from the chart (round 20).** The gnomonic isophote port
+    and its MW toggle are gone at user request; a saved `settings.chart.mw` is
+    ignored. The glow survives only in the All-Sky panel (`settings.allsky.mw`,
+    its own port — see that section), which is why `vendor/mwdata.js` stays
+    loaded. The round-13 documented deviation (no twilight/daylight sky tint on
+    the chart, ever) still stands — it was never MW-specific.
   - **Sun and Moon** (`settings.chart.sunMoon`, default on): SatObserver-style icons
     — rayed sun disc, moon with its phase terminator, bright limb facing the sun's
     chart direction (via a waypoint 1° along the moon→sun great circle, since the
@@ -956,8 +956,19 @@ view and gets the largest default window.
     the current-position marker + label follow the extended track at reduced alpha
     once the object has left the field, so a two-second crossing does not mean a
     two-second label;
-    the current position at `SAT.clock.getDate()` as a filled square + label
-    (name, and magnitude when known); the selected object gets a white ring.
+    the current position at `SAT.clock.getDate()` as a filled square + label;
+    the selected object gets a white ring.
+    **Tracks toggle (round 20)**: `settings.chart.tracks` (default on, toolbar ↗
+    directly after the label toggle, mirroring the All-Sky's) gates BOTH trail
+    layers and the motion arrow; off leaves only markers + labels, for holding a
+    clean field against a frame. Extended tracks are still BUILT with tracks off —
+    the off-field marker position follows them — they are just not drawn.
+    **Label format (round 20)**: `NAME [NORAD]` via the pure exported helper
+    `SAT.chart.satLabel(cr)` — the bracket always prints the full decimal
+    catalogue number (Alpha-5 fields are decoded server-side at parse: 'A0000'
+    arrives as 100000, so the label NEVER shows the letter form). Name-less
+    objects show just `[NORAD]`; a crossing with no norad falls back to the bare
+    name.
 - Interaction: hover shows a readout of cursor RA/Dec (and Alt/Az); click within 8 px
   of a marker selects that object; click elsewhere deselects; shift-click also
   re-aims but keeps the view still (both paths mark the scan stale; in alt/az mode
@@ -965,7 +976,8 @@ view and gets the largest default window.
 - Performance: dirty flag + rAF, devicePixelRatio aware, `'win-resize'` listener.
   Star cone results are cached and only re-queried when the tangent point or radius
   changes by more than 10% of the field.
-- Expose: `SAT.chart = { init, requestRender, fitView }`.
+- Expose: `SAT.chart = { init, requestRender, fitView, autoMagLimit, starDot,
+  satLabel }` (the last three pure, unit-tested in tools/test_chart.js).
 
 ### SAT.ui.crossings.init(bodyEl, win) — AGENT T (js/crossings.js) — MAIN LIST
 

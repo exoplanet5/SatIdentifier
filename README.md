@@ -129,9 +129,10 @@ section [o]).
   **optional**: out of the box, without it, every field draws from the bundled
   catalogue and simply tops out at **V = 10.5**. Star dots follow
   Stellarium's rendering law, fading smoothly to invisibility at the limit.
-  Milky Way, Sun/Moon (with lunar phase) and constellation overlays each have
-  a toolbar toggle; the All-Sky panel uses the bright-star set (V ≤ 4.6). No
-  twilight or daylight tinting in either view.
+  Sun/Moon (with lunar phase), constellation overlays, satellite labels and
+  satellite tracks each have a toolbar toggle; the All-Sky panel uses the
+  bright-star set (V ≤ 4.6) and carries the Milky-Way glow. No twilight or
+  daylight tinting in either view.
 
 ## Accuracy — read this before trusting an identification
 
