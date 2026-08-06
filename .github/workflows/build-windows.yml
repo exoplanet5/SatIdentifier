@@ -9,7 +9,9 @@ on:
     paths:
       - 'server.py'
       - 'desktop.py'
+      - 'desktop_occultation.py'
       - 'app/**'
+      - 'tools/**'
       - 'build_icon/SatIdentifier.ico'
       - '.github/workflows/build-windows.yml'
 
@@ -43,6 +45,7 @@ jobs:
         run: >
           pyinstaller --noconfirm --clean --windowed --name SatIdentifier
           --icon build_icon/SatIdentifier.ico --add-data "app;app"
+          --add-data "tools;tools"
           --collect-all webview desktop.py
 
       - name: Zip the app folder
