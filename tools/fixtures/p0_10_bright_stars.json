@@ -1,0 +1,32 @@
+{
+  "version": "p0-10-bright-fixture-v1",
+  "frame": "J2000 mean equator and mean equinox",
+  "source": "SatIdentifier bundled bright-star fixture; coordinates copied from app/js/vendor/starcat.js",
+  "magLimit": 4.6,
+  "stars": [
+    {"id":"bright-656","raDeg":236.07,"decDeg":6.43,"mag":2.6},
+    {"id":"bright-907","raDeg":318.96,"decDeg":5.25,"mag":3.9},
+    {"id":"bright-51","raDeg":25.36,"decDeg":5.49,"mag":4.5},
+    {"id":"bright-703","raDeg":248.36,"decDeg":-78.90,"mag":3.9},
+    {"id":"bright-636","raDeg":230.67,"decDeg":-44.69,"mag":3.4},
+    {"id":"bright-751","raDeg":264.40,"decDeg":-15.40,"mag":3.5},
+    {"id":"bright-779","raDeg":272.15,"decDeg":-63.67,"mag":4.3},
+    {"id":"bright-697","raDeg":247.35,"decDeg":-26.43,"mag":1.1},
+    {"id":"bright-617","raDeg":224.79,"decDeg":-42.10,"mag":3.1},
+    {"id":"bright-541","raDeg":196.73,"decDeg":-49.91,"mag":4.3},
+    {"id":"bright-587","raDeg":216.53,"decDeg":-45.22,"mag":4.6},
+    {"id":"bright-897","raDeg":313.70,"decDeg":-58.45,"mag":3.7},
+    {"id":"bright-914","raDeg":321.61,"decDeg":-65.37,"mag":4.2},
+    {"id":"bright-600","raDeg":220.29,"decDeg":13.73,"mag":3.8},
+    {"id":"bright-461","raDeg":162.41,"decDeg":-16.19,"mag":3.1},
+    {"id":"bright-537","raDeg":193.90,"decDeg":3.40,"mag":3.4},
+    {"id":"bright-379","raDeg":132.63,"decDeg":-27.71,"mag":4.0},
+    {"id":"bright-977","raDeg":343.13,"decDeg":-32.88,"mag":4.5},
+    {"id":"bright-571","raDeg":210.96,"decDeg":-60.37,"mag":0.6},
+    {"id":"bright-629","raDeg":229.38,"decDeg":-58.80,"mag":4.1},
+    {"id":"bright-748","raDeg":263.92,"decDeg":-46.51,"mag":4.6},
+    {"id":"bright-185","raDeg":72.80,"decDeg":5.61,"mag":3.7},
+    {"id":"bright-483","raDeg":170.28,"decDeg":6.03,"mag":4.0},
+    {"id":"bright-491","raDeg":176.46,"decDeg":6.53,"mag":4.0}
+  ]
+}

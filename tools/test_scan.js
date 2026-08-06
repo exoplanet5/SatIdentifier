@@ -1,6 +1,10 @@
 /* Verification for app/js/worker/scan-worker.js — the scan engine's core.
  * Run: node tools/test_scan.js [path/to/catalogue.tle]
  *
+ * With no argument the committed mini_catalog.tle fixture is used. A custom
+ * catalogue is still accepted for exploratory checks, but it is never required
+ * for the regression suite to run.
+ *
  * Three things are checked, in increasing order of how badly a failure would hurt:
  *
  *  (a) CORRECTNESS — every crossing returned really is inside the field at its
@@ -34,17 +38,13 @@ function ok(name, cond, detail) {
 
 /* ---- catalogue ----------------------------------------------------------- */
 
-const CANDIDATES = [
-  process.argv[2],
-  '/tmp/active.tle',
-  path.join('/private/tmp/claude-502/-Users-mickey-sda-satidentifier',
-    '8f585dfb-8b71-4dc2-9b62-f86b2af3ea20', 'scratchpad', 'active.tle'),
-].filter(Boolean);
+const DEFAULT_CATALOGUE = path.join(__dirname, 'fixtures', 'mini_catalog.tle');
+const CANDIDATES = process.argv[2] ? [process.argv[2]] : [DEFAULT_CATALOGUE];
 
 const src = CANDIDATES.find((p) => { try { return fs.statSync(p).isFile(); } catch (e) { return false; } });
 if (!src) {
-  console.error('No catalogue found. Fetch one with:\n  curl -s -A "SatIdentifier/0.1" ' +
-    '"https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle" -o /tmp/active.tle');
+  console.error('No catalogue found at ' + CANDIDATES[0] + '.');
+  console.error('Restore tools/fixtures/mini_catalog.tle or pass a valid TLE path explicitly.');
   process.exit(2);
 }
 

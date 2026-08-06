@@ -443,6 +443,8 @@
       objs[i] = {
         id: o.id, norad: o.norad, name: o.name, intl: o.intl,
         rcs: o.rcs == null ? null : o.rcs, stdMag: o.stdMag == null ? null : o.stdMag,
+        type: o.type == null ? null : String(o.type),
+        cls: o.cls == null ? null : String(o.cls).trim().toLowerCase(),
       };
       let r = null;
       try {
@@ -450,6 +452,7 @@
         if (!validSatrec(r)) r = null;
       } catch (e) { r = null; }
       recs[i] = r;
+      if (r) objs[i].cls = classOf(r);
       epochJd[i] = r ? r.jdsatepoch : 0;
       if (!r) badCount++;
     }
@@ -562,6 +565,27 @@
     const steps = p.steps || {};
     const filters = p.filters || {};
 
+    const filterSet = (value, normalise) => {
+      if (value == null) return null;
+      let values = value;
+      if (!Array.isArray(values)) {
+        if (typeof values === 'object') {
+          values = Object.keys(values).filter((key) => values[key]);
+        } else {
+          values = String(values).split(/[\\s,]+/);
+        }
+      }
+      return new Set(values.map((item) => normalise(item)).filter((item) => item));
+    };
+    const normaliseClass = (value) => {
+      const cls = String(value == null ? '' : value).trim().toLowerCase();
+      return cls === 'leo' || cls === 'meo' || cls === 'geo' || cls === 'heo' ? cls : '';
+    };
+    const normaliseType = (value) => {
+      const type = String(value == null ? '' : value).trim().toUpperCase();
+      return type === 'PAY' || type === 'R/B' || type === 'DEB' ? type : 'UNK';
+    };
+
     const shape = fov.shape === 'circ' ? 'circ' : 'rect';
     const halfW = (fov.wDeg || 0) / 2, halfH = (fov.hDeg || 0) / 2;
     // Coarse stage works with a single circumscribing radius; the true rectangle
@@ -616,6 +640,10 @@
 
     return {
       site: site, dut1S: dut1S, filters: filters,
+      classSet: filterSet(filters.classes != null ? filters.classes
+        : (filters.class != null ? filters.class : filters.orbitClasses), normaliseClass),
+      typeSet: filterSet(filters.types != null ? filters.types
+        : (filters.type != null ? filters.type : filters.objectTypes), normaliseType),
       pointing: p.pointing || { track: 'sky', raDeg: 0, decDeg: 0 },
       shape: shape, halfW: halfW, halfH: halfH,
       rotDeg: fov.rotDeg || 0,
@@ -633,7 +661,26 @@
       excludeNorad: obs ? obs.norad : null,
       useStage1: p.useStage1 !== false,
       maxCrossings: p.maxCrossings || 5000,
+      // Occultation pass discovery may request a smaller diagnostic path to
+      // avoid transferring millions of redundant points to the main thread.
+      // The crossing geometry itself is unchanged; later exact refinement can
+      // evaluate the canonical trajectory when a star candidate survives.
+      pathMaxSamples: Math.max(2, Math.floor(Number(p.workerPathMaxSamples || p.pathMaxSamples || 64))),
     };
+  }
+
+  function objectAllowed(P, obj) {
+    if (!obj) return false;
+    if (P.classSet && !P.classSet.has(String(obj.cls == null ? '' : obj.cls).trim().toLowerCase())) {
+      return false;
+    }
+    if (P.typeSet) {
+      const rawType = String(obj.type == null ? '' : obj.type).trim().toUpperCase();
+      const type = rawType === 'PAY' || rawType === 'R/B' || rawType === 'DEB'
+        ? rawType : 'UNK';
+      if (!P.typeSet.has(type)) return false;
+    }
+    return true;
   }
 
   /** Observer state in TEME km and km/s — THE one place observer kind matters
@@ -766,6 +813,7 @@
     const sinFov = Math.sin(Math.min(Math.PI / 2, fovR * D2R));
 
     for (let i = 0; i < n; i++) {
+      if (!objectAllowed(P, objs[i])) continue;
       const rec = recs[i];
       if (!rec) continue;
 
@@ -857,8 +905,11 @@
   }
 
   /** The whole scan. Chunked with setTimeout so a 'cancel' message can land and so
-   *  progress is reported; resolves with crossings plus the per-stage cull counts. */
-  function runScan(params, onProgress) {
+   *  progress is reported; resolves with crossings plus the per-stage cull counts.
+   *  An optional third argument receives each crossing as soon as stage 3 confirms
+   *  it. The normal browser caller omits it and retains the historical batch result;
+   *  the desktop complete runner uses it as a bounded-memory stream. */
+  function runScan(params, onProgress, onCrossing) {
     const P = prepare(params);
     cancelled = false;
     const t0Wall = Date.now();
@@ -870,13 +921,14 @@
       // ---- stage 1 -------------------------------------------------------
       const keep = P.useStage1 ? stage1(P) : (() => {
         const k = new Uint8Array(n);
-        for (let i = 0; i < n; i++) if (recs[i]) k[i] = 1;
+        for (let i = 0; i < n; i++) if (recs[i] && objectAllowed(P, objs[i])) k[i] = 1;
         return k;
       })();
 
       const live = [];
       for (let i = 0; i < n; i++) {
         if (!keep[i]) continue;
+        if (!objectAllowed(P, objs[i])) continue;
         // Self-exclusion (CONTRACT v0.2 gate 5): the observer never identifies
         // itself. Applied here so it holds on the useStage1:false path too.
         if (P.excludeNorad != null && objs[i].norad === P.excludeNorad) continue;
@@ -1048,32 +1100,43 @@
         fineChunk();
       };
 
-      const fineChunk = () => {
+      const fineChunk = async () => {
         if (cancelled) { reject(new Error('cancelled')); return; }
-        const deadline = Date.now() + SLICE_MS;
-        while (ci < cands.length && Date.now() < deadline) {
-          const c = cands[ci++];
-          const before = crossings.length;
-          try { refine(P, c.k, live[c.k], tsince0[c.k], ageDays[c.k], slopKm[c.k], c.wins, crossings); }
-          catch (e) { /* defensive: never let one bad object kill a scan */ }
-          if (crossings.length === before) culledStage3++;
-        }
-        if (onProgress) onProgress({ done: ci, total: cands.length, phase: 'fine' });
-        if (ci < cands.length) { setTimeout(fineChunk, 0); return; }
+        try {
+          const deadline = Date.now() + SLICE_MS;
+          while (ci < cands.length && Date.now() < deadline) {
+            const c = cands[ci++];
+            const before = crossings.length;
+            try { refine(P, c.k, live[c.k], tsince0[c.k], ageDays[c.k], slopKm[c.k], c.wins, crossings); }
+            catch (e) { /* defensive: never let one bad object kill a scan */ }
+            if (crossings.length === before) {
+              culledStage3++;
+            } else if (typeof onCrossing === 'function') {
+              const produced = crossings.splice(before);
+              for (let i = 0; i < produced.length; i++) {
+                await onCrossing(produced[i]);
+              }
+            }
+          }
+          if (onProgress) onProgress({ done: ci, total: cands.length, phase: 'fine' });
+          if (ci < cands.length) { setTimeout(fineChunk, 0); return; }
 
-        crossings.sort((a, b) => a.tCaMs - b.tCaMs);
-        resolve({
-          crossings: crossings,
-          culled: {
-            total: n, bad: badCount,
-            stage1: culledStage1,
-            stage2: live.length - cands.length,
-            stage3: culledStage3,
-            survivors: live.length, candidates: cands.length,
-          },
-          propagations: propagations,
-          ms: Date.now() - t0Wall,
-        });
+          crossings.sort((a, b) => a.tCaMs - b.tCaMs);
+          resolve({
+            crossings: crossings,
+            culled: {
+              total: n, bad: badCount,
+              stage1: culledStage1,
+              stage2: live.length - cands.length,
+              stage3: culledStage3,
+              survivors: live.length, candidates: cands.length,
+            },
+            propagations: propagations,
+            ms: Date.now() - t0Wall,
+          });
+        } catch (error) {
+          reject(error);
+        }
       };
 
       setTimeout(coarseChunk, 0);
@@ -1299,8 +1362,10 @@
             { refract: !!P.pointing.refract, dut1S: P.dut1S });
         }
 
-        // <= 64 path samples spanning tEnter..tExit, for the chart polyline
-        const nP = Math.max(2, Math.min(64, Math.ceil((tExit - tEnter) / fineMs) + 1));
+        // At most P.pathMaxSamples path samples spanning tEnter..tExit, for the
+        // chart polyline. Occultation pass discovery may lower this transfer cap.
+        const nP = Math.max(2, Math.min(P.pathMaxSamples,
+          Math.ceil((tExit - tEnter) / fineMs) + 1));
         const path = [];
         for (let q = 0; q < nP; q++) {
           const t = tEnter + (tExit - tEnter) * (nP === 1 ? 0 : q / (nP - 1));
@@ -1310,6 +1375,7 @@
 
         out.push({
           satId: obj.id, norad: obj.norad, name: obj.name, intl: obj.intl,
+          type: obj.type,
           tEnterMs: tEnter, tExitMs: tExit, tCaMs: Math.round(tCa),
           sepCaDeg: ca.sepDeg,
           raDeg: ca.raDeg, decDeg: ca.decDeg,
