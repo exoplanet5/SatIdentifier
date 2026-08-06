@@ -5,7 +5,7 @@
 
   function helpContent(body) {
     body.appendChild(U.el('div', { class: 'pane', style: 'font-size:12px;line-height:1.6;max-width:600px' }, [
-      U.el('h3', { style: 'margin:4px 0' }, 'SatIdentifier'),
+      U.el('h3', { style: 'margin:4px 0' }, 'SatOccult'),
       U.el('p', { class: 'dim', style: 'margin:4px 0' },
         'The inverse of a satellite tracker: instead of asking where a satellite is, ' +
         'it asks who is in your field of view — so an unidentified trail on a frame ' +

@@ -50,7 +50,7 @@ BRIGHT_TAKEOVER_MAG = 4.6       # at/below this V, prefer BSC5 photometry over T
 # stars silently fail to match and both copies survive. Bright stars are sparse
 # (~1000 over the whole sky), so a generous radius is safe here.
 MATCH_ARCSEC = 90.0
-USER_AGENT = "SatIdentifier/0.1 (star catalogue builder)"
+USER_AGENT = "SatOccult/0.2.0 (star catalogue builder)"
 FETCH_TIMEOUT = 600             # seconds; the full query returns ~160k rows
 
 MAG_LIMIT = 9.0                 # Johnson V cut written to the file

@@ -47,7 +47,7 @@ def read_defaults():
 class OccultationGui:
     def __init__(self, root):
         self.root = root
-        self.root.title("SatIdentifier — Complete Occultation Search")
+        self.root.title("SatOccult — Complete Occultation Search")
         self.root.geometry("780x600")
         self.process = None
         self.messages = queue.Queue()

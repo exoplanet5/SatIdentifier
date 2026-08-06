@@ -22,7 +22,7 @@ Namespace stays `SAT` (not `SATID`) so modules ported from SatObserver work unch
 /Users/mickey/sda/satidentifier/
   server.py                  # backend: static file server + JSON API (stdlib only)
   desktop.py                 # pywebview shell (native window), ~27 lines, as SatObserver
-  SatIdentifier.command      # double-click dev launcher
+  SatOccult.command           # double-click dev launcher
   tools/make_starcat.py      # one-shot: build assets/stars_m9.bin from Tycho-2 (dev only)
   app/
     index.html               # loads CSS + scripts in fixed order (see below)
@@ -1155,7 +1155,7 @@ tles:[{name, l1, l2, norad, intl, rcs, stdMag}]}`.
 
 Shared TLE parser identical to SatObserver's (3-line, 2-line, McCants `0 NAME`,
 Alpha-5 catalog numbers, malformed pairs skipped). Fetch timeouts 30 s;
-`User-Agent: SatIdentifier/0.1`. On startup print the URL and `webbrowser.open` it
+`User-Agent: SatOccult/0.2.0`. On startup print the URL and `webbrowser.open` it
 unless `--no-browser`. `--port N`. NO third-party imports.
 
 ## House style (binding — agents match this, not their own habits)
@@ -1211,8 +1211,8 @@ commits the zip back into `release/` with `[skip ci]`.
 
 ```sh
 .venv-build/bin/pyinstaller --noconfirm --clean --windowed \
-  --name "SatIdentifier" --icon build_icon/SatIdentifier.icns \
-  --add-data "app:app" --osx-bundle-identifier "local.satidentifier" desktop.py
+  --name "SatOccult" --icon build_icon/SatOccult.icns \
+  --add-data "app:app" --osx-bundle-identifier "local.satoccult" desktop.py
 ```
 
 When frozen, static assets come from `sys._MEIPASS` and user data goes to

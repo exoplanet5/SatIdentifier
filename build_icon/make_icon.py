@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Render the SatIdentifier app icon: a star field, the accent-blue FOV
+"""Render the SatOccult app icon: a star field, the accent-blue FOV
 rectangle, and a warm satellite trail crossing it with a motion arrowhead —
 the three things the app is actually about. Companion to SatObserver-MX's
 globe icon, same pipeline: 1024 px master -> iconset -> .icns (macOS) and
 .ico (Windows). Dev-time only; outputs are committed.
 
 Run:  python3 make_icon.py          (needs pillow)
-then: iconutil -c icns SatIdentifier.iconset -o SatIdentifier.icns
+then: iconutil -c icns SatOccult.iconset -o SatOccult.icns
 """
 
 import math
@@ -99,7 +99,7 @@ def main():
     img.save(out)
     print("wrote", out)
 
-    iconset = HERE / "SatIdentifier.iconset"
+    iconset = HERE / "SatOccult.iconset"
     iconset.mkdir(exist_ok=True)
     sizes = [16, 32, 128, 256, 512]
     for sz in sizes:
@@ -107,7 +107,7 @@ def main():
         img.resize((sz * 2, sz * 2), Image.LANCZOS).save(iconset / f"icon_{sz}x{sz}@2x.png")
     print("wrote", iconset)
 
-    ico = HERE / "SatIdentifier.ico"
+    ico = HERE / "SatOccult.ico"
     img.save(ico, sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print("wrote", ico)
 

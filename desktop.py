@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SatIdentifier desktop shell.
+"""SatOccult desktop shell.
 
 Runs the local backend on a daemon thread and hosts the UI in a native
 macOS window (pywebview / WKWebView). Closing the window quits the app.
@@ -31,7 +31,7 @@ def main():
     port = server.start_in_thread()
     api = OccultationBridge()
     webview.create_window(
-        "SatIdentifier",
+        "SatOccult",
         f"http://127.0.0.1:{port}",
         width=1500,
         height=950,

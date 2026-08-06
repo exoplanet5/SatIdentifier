@@ -25,10 +25,13 @@ features, together with related native-window and headless workflows, tests,
 and documentation. These changes are maintained separately from upstream
 SatIdentifier and are not part of the upstream project's official release.
 See [NOTICE.md](NOTICE.md) for attribution and third-party notices.
+The packaged applications also include `LICENSE` and `NOTICE.md` in their
+resources so the notices travel with redistribution copies.
 
-The repository and project are called **SatOccult**. Some application labels,
-source filenames, and release artifacts still use **SatIdentifier** for
-compatibility with the upstream codebase.
+The repository and project are called **SatOccult**. Some source filenames,
+internal compatibility paths, and SatIdentifier scan terminology remain from
+the upstream codebase; the packaged application and release artifacts use
+**SatOccult**.
 
 For normal satellite finding and identification, refer to the upstream
 [SatIdentifier README](https://github.com/exoplanet5/SatIdentifier). It covers
@@ -121,7 +124,7 @@ stage progress. A small Tk controller is also available with
 ```
 server.py                  Python 3 stdlib-only backend: static files + JSON API
 desktop.py                 pywebview shell for a native window
-SatIdentifier.command      double-click launcher (dev mode)
+SatOccult.command           double-click launcher (dev mode)
 app/
   index.html               loads CSS + scripts in a fixed order
   css/app.css              the whole design system, dark theme

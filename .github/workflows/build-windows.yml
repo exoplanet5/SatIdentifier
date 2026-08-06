@@ -12,7 +12,7 @@ on:
       - 'desktop_occultation.py'
       - 'app/**'
       - 'tools/**'
-      - 'build_icon/SatIdentifier.ico'
+      - 'build_icon/SatOccult.ico'
       - '.github/workflows/build-windows.yml'
 
 permissions:
@@ -43,24 +43,25 @@ jobs:
 
       - name: Build with PyInstaller
         run: >
-          pyinstaller --noconfirm --clean --windowed --name SatIdentifier
-          --icon build_icon/SatIdentifier.ico --add-data "app;app"
+          pyinstaller --noconfirm --clean --windowed --name SatOccult
+          --icon build_icon/SatOccult.ico --add-data "app;app"
           --add-data "tools;tools"
+          --add-data "LICENSE;." --add-data "NOTICE.md;."
           --collect-all webview desktop.py
 
       - name: Zip the app folder
-        run: Compress-Archive -Path dist/SatIdentifier -DestinationPath release/SatIdentifier-windows-x64.zip -Force
+        run: Compress-Archive -Path dist/SatOccult -DestinationPath release/SatOccult-windows-x64.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SatIdentifier-windows-x64
-          path: release/SatIdentifier-windows-x64.zip
+          name: SatOccult-windows-x64
+          path: release/SatOccult-windows-x64.zip
 
       - name: Commit release zip
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add release/SatIdentifier-windows-x64.zip
-          git commit -m "Windows build: release/SatIdentifier-windows-x64.zip [skip ci]"
+          git add release/SatOccult-windows-x64.zip
+          git commit -m "Windows build: release/SatOccult-windows-x64.zip [skip ci]"
           git pull --rebase origin main
           git push

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SatIdentifier backend.
+"""SatOccult backend.
 
 Static file server for app/ plus a small JSON API: TLE/catalogue fetching
 (CelesTrak, Space-Track, McCants), the two photometry lookup tables the
@@ -31,7 +31,7 @@ import zipfile
 from email.utils import formatdate
 
 VERSION = "0.2.0"
-USER_AGENT = "SatIdentifier/0.1"
+USER_AGENT = "SatOccult/" + VERSION
 FETCH_TIMEOUT = 30            # seconds, all outbound HTTP
 CACHE_FRESH_S = 2 * 3600      # CelesTrak group cache considered fresh below this age
 CATALOG_FRESH_S = 6 * 3600    # full catalogue: big fetch, elements move slowly
@@ -46,6 +46,8 @@ IS_BUNDLED = bool(getattr(sys, "_MEIPASS", None))
 BASE_DIR = pathlib.Path(getattr(sys, "_MEIPASS", None) or SCRIPT_DIR)
 APP_DIR = (BASE_DIR / "app").resolve()
 if IS_BUNDLED:
+    # Keep the legacy directory name so SatIdentifier users retain their
+    # cached catalogue and settings when moving to SatOccult.
     if sys.platform == "darwin":
         DATA_DIR = pathlib.Path.home() / "Library" / "Application Support" / "SatIdentifier"
     elif os.name == "nt":
@@ -722,7 +724,7 @@ def enrich_best_effort(tles):
 # ---------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "SatIdentifier/" + VERSION
+    server_version = "SatOccult/" + VERSION
     protocol_version = "HTTP/1.1"
 
     # -- logging: one line per request --------------------------------------
@@ -1309,7 +1311,7 @@ def start_in_thread(start_port=DEFAULT_PORT):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="SatIdentifier backend")
+    ap = argparse.ArgumentParser(description="SatOccult backend")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help=f"port to listen on (default {DEFAULT_PORT}; "
                          f"tries the next {PORT_TRIES - 1} if busy)")
@@ -1321,7 +1323,7 @@ def main():
 
     httpd = make_server(args.port)
     url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    print(f"SatIdentifier  {url}", flush=True)
+    print(f"SatOccult  {url}", flush=True)
     if not args.no_browser:
         t = threading.Timer(0.4, webbrowser.open, [url])
         t.daemon = True
