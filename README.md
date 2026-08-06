@@ -121,29 +121,15 @@ section [o]).
   draws whichever matches your tracking mode, including the field rotation a parked
   mount sees, and the trail drawn across the field between entry and exit is the
   thing to hold up against your frame.
-- **Adaptive star background** on the sky chart: the depth follows the field.
-  Views narrower than 3° draw **Gaia DR3 down to V = 13** from a local tiled star
-  database (`data/deepstars/`, ~6M stars / ~60 MB — build it once with
-  `python3 tools/make_starcat.py --deep-tiles`; no network is ever touched at
-  runtime, and for the packaged app the tile directory belongs in its data
-  folder, e.g. `~/Library/Application Support/SatIdentifier/deepstars/` on
-  macOS — a symlink works. The depth is a measured size trade: V ≤ 11 would be
-  ~10 MB but adds little over the bundled set, V ≤ 15 ~320 MB, V ≤ 17 ~1.4 GB —
-  m13 keeps a 1° field populated at ~150 stars/deg² for 60 MB). Wider views
-  draw from the bundled catalogue (Gaia DR3 to V = 10.5, 549 037 stars, proper
-  motions applied; BSC5/HYG photometry at the bright end), shedding depth as the
-  field grows — m 10.5 at 3° down to m 4.5 at ≥ 48° — so a wide chart never drowns
-  in stars. The toolbar button pins a fixed limit instead; without the deep build,
-  narrow fields quietly fall back to the bundled catalogue and the footer says so.
-  Star dots follow **Stellarium's rendering law** (`StelSkyDrawer::computeRCMag`,
-  adapted): flux-law radius for the bright and middle magnitudes, and below a 1 px
-  floor the dot stops shrinking and *fades* — cubic luminance falloff to a cutoff —
-  so a deep field grades smoothly to invisibility at the limit instead of ending in
-  uniform minimum-size dots. Milky Way, Sun/Moon (with lunar phase) and
-  constellation-name overlays each keep their own toggle. The **All-Sky panel**
-  uses the bright-star set only (V ≤ 4.6, as SatObserver), with the same Milky Way
-  and Sun/Moon toggles. Neither view tints its background with twilight or
-  daylight.
+- **Star background** (Gaia DR3): the depth adapts to the field — a local tiled
+  database to **V = 13** serves views narrower than 3° (built once with
+  `python3 tools/make_starcat.py --deep-tiles`, ~60 MB, never touches the
+  network at runtime); wider views use the bundled catalogue (V ≤ 10.5,
+  549 037 stars), shedding depth as the field grows. Star dots follow
+  Stellarium's rendering law, fading smoothly to invisibility at the limit.
+  Milky Way, Sun/Moon (with lunar phase) and constellation overlays each have
+  a toolbar toggle; the All-Sky panel uses the bright-star set (V ≤ 4.6). No
+  twilight or daylight tinting in either view.
 
 ## Accuracy — read this before trusting an identification
 
