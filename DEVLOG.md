@@ -712,6 +712,51 @@ reload re-hydrates the query set from `celestrak_q_*` via catalogRefs.
 test_ports [3] updated: tab list, object-query-only source check, SATCAT row,
 and the 130 px width pinned.
 
+### Round 14 (2026-08-06) — adaptive star depth, m17 online for narrow fields
+
+Requested: go deeper — V = 17 — when the field is under 3°, without drowning
+wider fields in stars. V 17 over the whole sky is ~50M+ objects, two orders of
+magnitude past anything bundleable, so the depth had to split by field size:
+
+- **Auto depth law** (`SAT.chart.autoMagLimit(D)`, D = enclosing-circle
+  diameter of the view, pure + unit-tested): D < 3° → **17.0**; D ≥ 3° →
+  `clamp(10.5 − 5·log10(D/3), 4.5, 10.5)` — 10.5 at 3°, 9 at 6°, 7.5 at 12°,
+  6 at 24°, floor 4.5 from ~48°. Default on (`settings.chart.magAuto`; old
+  saved states migrate to it by omission). The m-limit button now cycles
+  auto → 4.5/6/7.5/9/11 → auto; the footer always states the effective limit.
+- **Online deep field**: `GET /api/stars/cone?ra&dec&r&mag` — Gaia DR3 cone
+  via VizieR asu-tsv (the make_starcat.py interface), G→V by the same
+  Riello+ 2021 relation, proper motions to the *current* decimal year, sorted
+  by G with a 60 000-row guard, brightest 20 000 kept (the chart's own draw
+  cap). r ≤ 3° / mag ≤ 18 enforced — wide fields must never reach the
+  network. Cached forever (star fields don't go stale), family pruned to the
+  24 newest files. Frontend `SAT.stars.deepField()`: single slot, fetch
+  centre snapped to a 0.05° grid and radius rounded UP to a bucket so pans
+  and wheel-zoom ticks re-hit both caches instead of refetching per tick;
+  while loading (or offline/failed, 30 s backoff) the chart draws the local
+  catalogue and the footer says which state it is in. `localLimit()` (new)
+  reads the binary header so the chart knows when the local file cannot serve
+  the wanted depth.
+- **Deep-limit display compression**: the round-9 flux-law curve was tuned
+  for limits ≤ 11; at m17 everything past m11 would sit on the 0.7 px floor.
+  For deeper limits the faint tail maps m 9..mlim onto the display 9..11 ramp
+  (`mdisp = 9 + 2(m−9)/(mlim−9)`) — bright stars render identically at every
+  depth, and the m17 field still grades down to its limit.
+
+Verified live: Pleiades at 1.5° × 1.0° draws 15 743 Gaia stars with
+"m17.0 auto · Gaia online" in the footer (3 816 in the 1°-radius probe cone,
+brightest Alcyone V 2.93, worst separation 0.9999° of r = 1.0); the same
+pointing at 8° × 6° reads "m7.0 auto" from the local catalogue with no
+network fetch; a VizieR cone of the Scutum cloud (6 465 stars to V 17)
+exercises the dense-plane path; cache hit serves in 18 ms; r = 5 / mag = 20 /
+non-numeric params all answer 400. test_stars [8b] pins the deepField
+quantisation, slot containment, v100 decode and failure backoff; test_chart
+[12] pins the law anchors and the loading→ready swap without a local
+re-cone. One verification dead-end worth recording: with the Chrome window
+occluded, macOS suspends rAF, so a queued render never fires and the footer
+reads stale — twenty minutes were spent hunting an onReady "bug" that was
+the window manager's throttling, not the code's.
+
 ## 13. Running the checks
 
 ```sh

@@ -31,6 +31,7 @@
   let raArr = null, decArr = null, mag100Arr = null;
   let starCount = 0;
   let deep = false;
+  let localMag = 0;                 // the live catalogue's V limit (binary header)
   let loadPromise = null;
 
   const norm360 = (d) => ((d % 360) + 360) % 360;
@@ -62,6 +63,9 @@
     mag100Arr = new Int16Array(buf, HEADER_BYTES + 8 * n, n);
     starCount = n;
     deep = true;
+    // The header's V limit (10.5 Gaia / 9.0 Tycho) tells the chart when a wanted
+    // depth is beyond this file and the online deep field is needed (round 14).
+    localMag = head.getFloat32(8, true) || 9.0;
   }
 
   /** Build the same three arrays from SAT.stardata, sorted by declination.
@@ -83,6 +87,7 @@
     }
     starCount = n;
     deep = false;
+    localMag = 4.6;                 // the bright catalogue's nominal V limit
   }
 
   /** Load the deep catalogue once. Never rejects: a missing or malformed asset
@@ -229,6 +234,83 @@
     return out;
   }
 
+  // ---- online deep field (round 14) ----------------------------------------
+  // The chart's < 3° views want V = 17 — ~50M stars over the whole sky, two
+  // orders of magnitude past anything bundleable — so narrow cones come from the
+  // backend (/api/stars/cone -> Gaia DR3 via VizieR) on demand. A single slot is
+  // enough: the chart only ever looks at one place at a time.
+  //
+  // The fetch centre snaps to a 0.05° grid and the radius rounds UP to a bucket,
+  // with margin so the snapped disc still covers the true request. Both
+  // quantisations exist for cache hit rate: without them every wheel-zoom tick
+  // past the 10% slack would mint a new backend query, and the server's disk
+  // cache would never be re-hit across a session.
+  const DEEP_BUCKETS = [0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
+  const DEEP_GRID = 0.05;           // deg; snap margin is DEEP_GRID * ~0.71 < 0.06
+  const DEEP_RETRY_MS = 30000;      // failed-fetch backoff — offline must stay quiet
+  let deepSlot = null;              // {key, raDeg, decDeg, rDeg, mag, stars, truncated}
+  let deepInflight = null;          // key of the fetch in progress
+  let deepFail = null;              // {key, atMs} of the last failure
+
+  /** Online deep cone for the chart's narrow fields. Never throws, never rejects.
+   *  Returns {state:'ready'|'loading'|'error', stars, truncated}; while not
+   *  'ready' the caller draws the local catalogue instead. onReady fires at most
+   *  once per completed fetch (success or failure — the footer must update). */
+  function deepField(ra0, dec0, radiusDeg, magLimit, onReady) {
+    if (deepSlot && deepSlot.mag === magLimit
+        && SAT.frames.sep(deepSlot.raDeg, deepSlot.decDeg, ra0, dec0) + radiusDeg
+           <= deepSlot.rDeg + 1e-6) {
+      return { state: 'ready', stars: deepSlot.stars, truncated: deepSlot.truncated };
+    }
+    let rB = DEEP_BUCKETS[DEEP_BUCKETS.length - 1];
+    for (let i = 0; i < DEEP_BUCKETS.length; i++) {
+      if (DEEP_BUCKETS[i] >= radiusDeg + 0.06) { rB = DEEP_BUCKETS[i]; break; }
+    }
+    const raQ = +(((Math.round(ra0 / DEEP_GRID) * DEEP_GRID) % 360).toFixed(2));
+    const decQ = +(Math.max(-90, Math.min(90, Math.round(dec0 / DEEP_GRID) * DEEP_GRID))
+      .toFixed(2));
+    const magQ = +magLimit.toFixed(1);
+    const key = raQ + '|' + decQ + '|' + rB + '|' + magQ;
+
+    // Same disc as the slot but the coverage test above missed (radius right at
+    // the bucket edge): the slot IS this fetch — serve it rather than refetching.
+    if (deepSlot && deepSlot.key === key) {
+      return { state: 'ready', stars: deepSlot.stars, truncated: deepSlot.truncated };
+    }
+    if (deepInflight === key) return { state: 'loading', stars: null };
+    if (deepFail && deepFail.key === key && Date.now() - deepFail.atMs < DEEP_RETRY_MS) {
+      return { state: 'error', stars: null };
+    }
+
+    deepInflight = key;
+    fetch('/api/stars/cone?ra=' + raQ + '&dec=' + decQ + '&r=' + rB + '&mag=' + magQ)
+      .then((resp) => {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then((d) => {
+        if (deepInflight !== key) return;       // superseded by a newer request
+        deepInflight = null;
+        const rows = (d && d.stars) || [];
+        const stars = new Array(rows.length);
+        for (let i = 0; i < rows.length; i++) {
+          stars[i] = { raDeg: rows[i][0], decDeg: rows[i][1], mag: rows[i][2] / 100 };
+        }
+        deepSlot = { key: key, raDeg: raQ, decDeg: decQ, rDeg: rB, mag: magQ,
+                     stars: stars, truncated: !!(d && d.truncated) };
+        deepFail = null;
+        if (onReady) { try { onReady(); } catch (e) { /* caller's problem */ } }
+      })
+      .catch((e) => {
+        if (deepInflight !== key) return;
+        deepInflight = null;
+        deepFail = { key: key, atMs: Date.now() };
+        console.warn('SAT.stars.deepField: ' + (e && e.message));
+        if (onReady) { try { onReady(); } catch (e2) { /* ignore */ } }
+      });
+    return { state: 'loading', stars: null };
+  }
+
   // ---- status --------------------------------------------------------------
 
   /** True when the deep catalogue is live; false on the bright-star fallback.
@@ -238,5 +320,8 @@
   /** Number of stars in whichever catalogue is live. */
   const count = () => starCount;
 
-  SAT.stars = { load, cone, named, constellationLines, isDeep, count };
+  /** The live catalogue's magnitude limit — what cone() can actually deliver. */
+  const localLimit = () => localMag;
+
+  SAT.stars = { load, cone, named, constellationLines, deepField, isDeep, count, localLimit };
 })();

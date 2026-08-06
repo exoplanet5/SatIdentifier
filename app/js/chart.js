@@ -78,7 +78,8 @@
     if (c.constNames == null) c.constNames = false;
     if (c.sunMoon == null) c.sunMoon = true;
     if (c.mw == null) c.mw = false;             // Milky Way layer, off by default
-    if (c.magLimit == null) c.magLimit = 9.0;
+    if (c.magAuto == null) c.magAuto = true;    // round 14: depth follows the field
+    if (c.magLimit == null) c.magLimit = 9.0;   // the pinned MANUAL limit
     if (c.grid == null) c.grid = true;
     if (c.labels == null) c.labels = true;
     if (c.padFrac == null) c.padFrac = 0.7;
@@ -346,6 +347,27 @@
   // round 11 briefly made it bright-only on a misread instruction; the SatObserver
   // bright-only fallback belongs to the All-Sky panel. See CONTRACT
   // "Chart star background".
+  // Round 14: the depth is adaptive by default (settings.chart.magAuto) — narrow
+  // fields go to m17 through the online deep cone, wide fields shed depth so the
+  // star count stays bounded. autoMagLimit() is the law; ensureStars() decides
+  // which catalogue can serve it.
+
+  /** The auto-mode star depth for a field `fieldDeg` degrees across (the
+   *  enclosing-circle diameter). Pure; unit-tested in tools/test_chart.js.
+   *  Below 3° the online Gaia depth (m17) — the frame-matching case; from 3° up
+   *  the local catalogue sheds half a magnitude per ~1.15x of field growth:
+   *  10.5 at 3°, 9 at 6°, 7.5 at 12°, 6 at 24°, floor 4.5 from ~48° up.
+   *  Quantised to 0.1 mag so wheel-zoom ticks don't re-query per frame. */
+  function autoMagLimit(fieldDeg) {
+    if (!(fieldDeg > 0)) return 10.5;
+    if (fieldDeg < 3) return 17;
+    var m = 10.5 - 5 * Math.log(fieldDeg / 3) / Math.LN10;
+    return Math.round(Math.max(4.5, Math.min(10.5, m)) * 10) / 10;
+  }
+
+  /** Fetch-completion callback for the deep field: the cached cone is stale the
+   *  moment better stars exist (or the footer needs to say the fetch failed). */
+  function onDeepField() { invalidateStars(); requestRender(); }
 
   /** Cone query with caching. Queries 1.2x wider than needed so the 10%-of-field
    *  reuse window below is always fully covered by the cached disc. */
@@ -354,6 +376,7 @@
     if (!SAT.stars || typeof SAT.stars.cone !== 'function') {
       // stars.js absent or not loaded yet: an empty field, never a thrown render
       c.ok = false; c.stars = []; c.named = []; c.lines = []; c.cons = [];
+      c.effMag = magLimit; c.deepState = null; c.deepTrunc = false;
       return c;
     }
     var slack = 0.10 * radiusDeg;
@@ -364,7 +387,23 @@
     }
     var q = radiusDeg * 1.2;
     var stars = [], named = [], lines = [], cons = [];
-    try { stars = SAT.stars.cone(ra0, dec0, q, magLimit) || []; } catch (e) { stars = []; }
+    var deepState = null, deepTrunc = false;
+    var localLim = (typeof SAT.stars.localLimit === 'function')
+      ? SAT.stars.localLimit() : Infinity;
+    if (magLimit > localLim + 0.01 && typeof SAT.stars.deepField === 'function') {
+      // Wanted depth is beyond the bundled catalogue: ask the online deep field.
+      // While it loads (or after it failed) the local cone below still draws, so
+      // the chart never blanks — it just deepens when the fetch lands.
+      var df = SAT.stars.deepField(ra0, dec0, q, magLimit, onDeepField);
+      deepState = df.state;
+      if (df.state === 'ready') {
+        stars = df.stars || [];
+        deepTrunc = !!df.truncated;
+      }
+    }
+    if (deepState !== 'ready') {
+      try { stars = SAT.stars.cone(ra0, dec0, q, magLimit) || []; } catch (e) { stars = []; }
+    }
     try {
       if (typeof SAT.stars.named === 'function') named = SAT.stars.named(ra0, dec0, q) || [];
     } catch (e) { named = []; }
@@ -384,6 +423,7 @@
     }
     c.ok = true; c.ra0 = ra0; c.dec0 = dec0;
     c.radiusDeg = radiusDeg; c.queryDeg = q; c.magLimit = magLimit;
+    c.effMag = magLimit; c.deepState = deepState; c.deepTrunc = deepTrunc;
     c.stars = stars; c.named = named; c.lines = lines; c.cons = cons;
     return c;
   }
@@ -504,7 +544,8 @@
     var c = cfg();
     if (!c.stars && !c.constLines && !c.starNames && !c.constNames) return;
     var fr = viewRadiusDeg(t);
-    var cache = ensureStars(ra0, dec0, fr, c.magLimit);
+    var eff = c.magAuto ? autoMagLimit(2 * fr) : c.magLimit;
+    var cache = ensureStars(ra0, dec0, fr, eff);
     var spanDeg = cssW / Math.max(1e-9, t.scale);
     var i, j, p, prev, st;
 
@@ -528,6 +569,14 @@
     }
 
     if (c.stars && cache.stars.length) {
+      // Round 14: the flux-law curve below was tuned for limits up to ~11; a
+      // deeper effective limit (the m17 online field) would park everything past
+      // m11 on the 0.7 px floor and the field would read as uniform dots. So for
+      // deep limits the faint tail is compressed into the tuned display range —
+      // m <= 9 renders identically at every depth, and m 9..mlim maps onto the
+      // display 9..11 ramp, so an m17 field still grades down to its limit.
+      var mlim = cache.effMag != null ? cache.effMag : 11;
+      var comp = mlim > 11 ? 2 / (mlim - 9) : 1;
       for (i = 0; i < cache.stars.length; i++) {
         st = cache.stars[i];
         p = proj(st.raDeg, st.decDeg, ra0, dec0, t);
@@ -541,8 +590,9 @@
         // m5 = 2.0, m7 = 1.3, m9 = 0.9; capped at 6.5 px so Sirius is a star and
         // not a blob, floored at 0.7 px / alpha 0.42 so the deep catalogue's
         // m9-10.5 end stays visible rather than clipped away.
-        var rad = Math.min(6.5, Math.max(0.7, 5.2 * Math.pow(10, -0.085 * st.mag)));
-        var alpha = Math.max(0.42, Math.min(1, 1.04 - 0.058 * st.mag));
+        var m = (comp !== 1 && st.mag > 9) ? 9 + (st.mag - 9) * comp : st.mag;
+        var rad = Math.min(6.5, Math.max(0.7, 5.2 * Math.pow(10, -0.085 * m)));
+        var alpha = Math.max(0.42, Math.min(1, 1.04 - 0.058 * m));
         ctx.beginPath();
         ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(225,235,255,' + alpha.toFixed(2) + ')';
@@ -1185,6 +1235,20 @@
     } else if (!SAT.stars) {
       foot.push('no star catalogue');
     }
+    // Star depth (round 14): always say what limit is actually drawn — in auto
+    // mode it changes with zoom, and while the online field loads or fails the
+    // drawn depth is NOT the wanted one, which is exactly when it must be said.
+    if (cfg().stars && starCache.ok && starCache.effMag != null) {
+      var mtxt = 'm' + starCache.effMag.toFixed(1) + (cfg().magAuto ? ' auto' : '');
+      if (starCache.deepState === 'ready') {
+        mtxt += ' · Gaia online' + (starCache.deepTrunc ? ' (brightest 20k)' : '');
+      } else if (starCache.deepState === 'loading') {
+        mtxt += ' · fetching deep stars…';
+      } else if (starCache.deepState === 'error') {
+        mtxt += ' · deep fetch failed — local stars';
+      }
+      foot.push(mtxt);
+    }
     elFoot.textContent = foot.join(' · ');
   }
 
@@ -1410,11 +1474,17 @@
       tbtn('constNames', 'CN', 'constellation names (fields wider than 5°)', toggleLayer('constNames')),
       tbtn('grid', '#', 'RA/Dec grid', toggleLayer('grid')),
       tbtn('labels', 'Ab', 'satellite labels', toggleLayer('labels')),
-      tbtn('mag', 'm9', 'star magnitude limit', function () {
+      tbtn('mag', 'mA', 'star magnitude limit — mA adapts to the field '
+        + '(m17 online below 3°, shallower as the field grows)', function () {
         var c = cfg();
         var steps = [4.5, 6, 7.5, 9, 11];
-        var i = steps.indexOf(c.magLimit);
-        c.magLimit = steps[(i + 1) % steps.length];
+        if (c.magAuto) {
+          c.magAuto = false; c.magLimit = steps[0];
+        } else {
+          var i = steps.indexOf(c.magLimit);
+          if (i < 0 || i === steps.length - 1) c.magAuto = true;
+          else c.magLimit = steps[i + 1];
+        }
         invalidateStars();
         try { SAT.state.save(); } catch (e) { /* ignore */ }
         updateToolbar();
@@ -1444,7 +1514,7 @@
     toolBtns.constNames.classList.toggle('chart-on', !!c.constNames);
     toolBtns.grid.classList.toggle('chart-on', !!c.grid);
     toolBtns.labels.classList.toggle('chart-on', !!c.labels);
-    toolBtns.mag.textContent = 'm' + c.magLimit;
+    toolBtns.mag.textContent = c.magAuto ? 'mA' : 'm' + c.magLimit;
   }
 
   function init(bodyEl, win) {
@@ -1492,6 +1562,9 @@
 
   SAT.chart = {
     init: init, requestRender: requestRender, fitView: fitView,
+    // Round 14: the adaptive star-depth law, pure and public — the CONTRACT
+    // documents it and tools/test_chart.js pins its anchor points.
+    autoMagLimit: autoMagLimit,
     // Pure geometry, exported for tools/test_chart.js. The orientation transform is
     // the one piece of this file that can be — and must be — verified without a
     // browser; everything else is paint.

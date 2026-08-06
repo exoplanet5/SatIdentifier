@@ -98,6 +98,7 @@ function fmt(v) {
     check('star count', info.count, 130183, 0, 'stars');
     check('count() agrees', S.count(), 130183, 0, 'stars');
     ok('isDeep()', S.isDeep() === true);
+    check('localLimit() reads the header V cut', S.localLimit(), 9.0, 1e-6, 'mag');
     const bytes = fs.statSync(ASSET).size;
     check('asset size matches 12 + 10*count', bytes, 12 + 10 * info.count, 0, 'bytes');
   }
@@ -228,6 +229,82 @@ function fmt(v) {
     for (const s of c) { worstMag = Math.max(worstMag, s.mag); worstSep = Math.max(worstSep, F.sep(RA0, DEC0, s.raDeg, s.decDeg)); }
     ok('fallback respects the cone', worstSep <= 10.0, 'worst ' + worstSep.toFixed(4) + ' deg');
     ok('fallback is the V<=4.6 catalogue', worstMag <= 4.6, 'faintest ' + worstMag.toFixed(2));
+    check('fallback localLimit', B.localLimit(), 4.6, 1e-6, 'mag');
+  }
+
+  console.log('\n[8b] deepField — the online deep cone (round 14)');
+  {
+    // A fetch shim that serves the asset for the loader AND answers
+    // /api/stars/cone like server.py does: v100 integer mags, mag-sorted.
+    const coneReqs = [];
+    let coneFail = false;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.startsWith('/api/stars/cone')) {
+        coneReqs.push(u);
+        if (coneFail) throw new Error('network down');
+        const q = {};
+        for (const kv of u.split('?')[1].split('&')) {
+          const [k, v] = kv.split('='); q[k] = +v;
+        }
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            ok: true, raDeg: q.ra, decDeg: q.dec, rDeg: q.r, mag: q.mag,
+            truncated: false, count: 3,
+            stars: [[q.ra, q.dec, 850], [q.ra + 0.1, q.dec, 1450], [q.ra - 0.1, q.dec, 1690]],
+          }),
+        };
+      }
+      const b = fs.readFileSync(ASSET);
+      return {
+        ok: true, status: 200,
+        arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength),
+      };
+    };
+    reloadModule('stars.js');
+    const D = SAT.stars;
+    await D.load();
+    check('deep localLimit from the binary header', D.localLimit(), 9.0, 1e-6, 'mag');
+
+    let readyCount = 0;
+    const onReady = () => readyCount++;
+    const settle = () => new Promise((res) => setImmediate(res));
+
+    let r = D.deepField(100.013, 20.019, 0.9, 17, onReady);
+    ok('first call is loading, no stars yet', r.state === 'loading' && r.stars === null);
+    ok('exactly one backend request', coneReqs.length === 1, coneReqs[0]);
+    ok('centre snapped to the 0.05° grid, radius bucketed up to 1°',
+      /ra=100&dec=20&r=1&mag=17$/.test(coneReqs[0]), coneReqs[0]);
+
+    await settle();
+    ok('onReady fired once on arrival', readyCount === 1, 'fired ' + readyCount);
+    r = D.deepField(100.013, 20.019, 0.9, 17, onReady);
+    ok('now ready with parsed stars', r.state === 'ready' && r.stars.length === 3);
+    ok('v100 decoded to magnitudes',
+      Math.abs(r.stars[0].mag - 8.5) < 1e-9 && Math.abs(r.stars[2].mag - 16.9) < 1e-9);
+
+    // The quantisation exists for exactly these two reuse cases:
+    r = D.deepField(100.05, 20.04, 0.9, 17, onReady);
+    ok('small pan re-served from the slot', r.state === 'ready' && coneReqs.length === 1);
+    r = D.deepField(100.0, 20.0, 0.5, 17, onReady);
+    ok('zoom-in covered by the slot', r.state === 'ready' && coneReqs.length === 1);
+
+    r = D.deepField(103.0, 20.0, 0.9, 17, onReady);
+    ok('a real re-aim refetches', r.state === 'loading' && coneReqs.length === 2);
+    await settle();
+    ok('onReady per completed fetch', readyCount === 2, 'fired ' + readyCount);
+
+    const warn = console.warn; console.warn = () => {};   // the failure warns; expected
+    coneFail = true;
+    D.deepField(120.0, -5.0, 0.9, 17, onReady);
+    await settle();
+    const n = coneReqs.length;
+    r = D.deepField(120.0, -5.0, 0.9, 17, onReady);
+    ok('failed fetch parks in error, no retry storm',
+      r.state === 'error' && coneReqs.length === n, r.state + ', ' + coneReqs.length + ' reqs');
+    coneFail = false;
+    console.warn = warn;
   }
 
   // ============================================================ photometry.js

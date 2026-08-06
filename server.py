@@ -69,6 +69,16 @@ CELESTRAK_NAME_URL = "https://celestrak.org/NORAD/elements/gp.php?NAME={name}&FO
 SATCAT_URL = "https://celestrak.org/satcat/records.php?CATNR={norad}&FORMAT=JSON"
 SATCAT_BULK_URL = "https://celestrak.org/pub/satcat.csv"
 QSMAG_URL = "https://www.mmccants.org/programs/qsmag.zip"
+# Round 14: the chart's online deep star field (< 3° views go to V = 17, far past
+# the bundled catalogue). Same VizieR asu-tsv interface tools/make_starcat.py uses.
+VIZIER_URL = "https://vizier.cds.unistra.fr/viz-bin/asu-tsv"
+GAIA_SOURCE = "I/355/gaiadr3"
+GAIA_EPOCH = 2016.0             # Gaia DR3 positions are at this epoch
+STARS_CONE_MAX_R = 3.0          # deg; narrow fields only — wide is the local asset
+STARS_CONE_MAX_MAG = 18.0
+STARS_CONE_ROW_CAP = 60000      # VizieR row guard; -sort=Gmag keeps the brightest
+STARS_CONE_KEEP = 20000         # the chart's own draw cap — more JSON is wasted
+STARS_CONE_CACHE_N = 24         # newest stars_cone_* files kept (~15 MB ceiling)
 SPACETRACK_BASE = "https://www.space-track.org"
 SPACETRACK_LOGIN = SPACETRACK_BASE + "/ajaxauth/login"
 
@@ -528,6 +538,89 @@ def celestrak_query_urls(qtype, value):
 
 
 # ---------------------------------------------------------------------------
+# Online deep star field (round 14)
+#
+# The chart's < 3° views want stars to V = 17 — that is ~50M+ objects over the
+# whole sky, two orders of magnitude past anything bundleable, so narrow fields
+# are fetched per-cone from Gaia DR3 via VizieR and cached. Wide fields never
+# reach this code: the frontend serves them from the bundled catalogue.
+# ---------------------------------------------------------------------------
+
+def gaia_g_to_v(g, bprp):
+    """Johnson V from Gaia G and BP-RP (Riello+ 2021 photometric relations),
+    identical to the tools/make_starcat.py implementation so the online field
+    and the bundled asset sit on one photometric scale. Missing colour leaves
+    V = G — good to ~0.3 mag, fine for a dot size."""
+    if bprp is None:
+        return g
+    x = max(-1.0, min(5.0, bprp))
+    return g - (-0.02704 + 0.01424 * x - 0.2156 * x * x + 0.01426 * x * x * x)
+
+
+def parse_gaia_cone_tsv(text, v_limit, epoch_yr):
+    """VizieR asu-tsv rows -> ([(raDeg, decDeg, vMag), ...], n_data_rows)
+    at epoch_yr. n_data_rows counts rows BEFORE the V cut, so the caller can
+    tell "the request cap bit" apart from "the field is simply sparse".
+
+    Same column set and conventions as make_starcat.py's Gaia build: pmRA is
+    mu_alpha* (already times cos dec) so the RA step divides the cos back out;
+    blank proper motions (common at the bright end) move nothing.
+    """
+    dt = epoch_yr - GAIA_EPOCH
+    stars = []
+    n_rows = 0
+    seen_sep = False
+    for line in text.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        if line.startswith("---"):
+            seen_sep = True
+            continue
+        if not seen_sep:
+            continue                      # header / units lines
+        p = line.split("\t")
+        if len(p) < 6:
+            continue
+        try:
+            ra, dec, g = float(p[0]), float(p[1]), float(p[4])
+        except ValueError:
+            continue
+        n_rows += 1
+
+        def opt(v):
+            try:
+                return float(v)
+            except ValueError:
+                return None
+        pm_ra, pm_de, bprp = opt(p[2]), opt(p[3]), opt(p[5])
+        if pm_ra is not None and pm_de is not None:
+            cosd = math.cos(math.radians(dec))
+            if abs(cosd) > 1e-6:
+                ra += pm_ra * dt / 3.6e6 / cosd
+            dec += pm_de * dt / 3.6e6
+        v = gaia_g_to_v(g, bprp)
+        if v <= v_limit:
+            stars.append((ra % 360.0, dec, v))
+    return stars, n_rows
+
+
+def prune_cache_family(prefix, keep):
+    """Delete all but the `keep` newest cache files whose key starts with prefix.
+
+    The stars_cone_ family is the one cache that grows per *pointing* rather
+    than per catalogue, so without this an evening of narrow-field browsing
+    would leave hundreds of ~600 KB files behind.
+    """
+    files = sorted(CACHE_DIR.glob(prefix + "*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    for p in files[keep:]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Photometry lookup tables
 #
 # Both are keyed by the *integer* NORAD id rendered as a string — never by the
@@ -804,6 +897,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._satcat_bulk(qs)
             if path == "/api/qsmag":
                 return self._qsmag(qs)
+            if path == "/api/stars/cone":
+                return self._stars_cone(qs)
             if path == "/api/cache":
                 return self._cache_list()
             if path.startswith("/api/cache/"):
@@ -932,6 +1027,70 @@ class Handler(http.server.BaseHTTPRequestHandler):
         payload = make_payload(f"celestrak:{label}", tles)
         payload["cacheKey"] = key
         cache_write(key, payload)
+        self._respond(200, payload)
+
+    def _stars_cone(self, qs):
+        """Online deep star field for the chart's narrow views (round 14).
+
+        Gaia DR3 cone via VizieR, G -> Johnson V, proper motions to the current
+        epoch, brightest STARS_CONE_KEEP kept. Star fields never go stale, so a
+        cache hit is served without any freshness test; refresh=1 forces.
+        """
+        try:
+            ra = float(qs.get("ra", "")) % 360.0
+            dec = float(qs.get("dec", ""))
+            r = float(qs.get("r", ""))
+            mag = float(qs.get("mag", ""))
+        except ValueError:
+            raise ApiError(400, "ra, dec, r and mag must be numbers")
+        if not -90.0 <= dec <= 90.0:
+            raise ApiError(400, "dec out of range")
+        if not 0.0 < r <= STARS_CONE_MAX_R:
+            raise ApiError(400, f"r must be in (0, {STARS_CONE_MAX_R}] deg — "
+                                "wide fields are the local catalogue's job")
+        if not 0.0 < mag <= STARS_CONE_MAX_MAG:
+            raise ApiError(400, f"mag must be in (0, {STARS_CONE_MAX_MAG}]")
+        refresh = qs.get("refresh") == "1"
+
+        key = "stars_cone_" + hashlib.sha1(
+            f"{ra:.5f}|{dec:.5f}|{r:.4f}|{mag:.2f}".encode("utf-8")).hexdigest()[:12]
+        cached = cache_read(key)
+        if cached and not refresh:
+            return self._respond(200, cached)
+
+        # -sort=Gmag makes the row cap keep the brightest rows rather than
+        # whatever dec band VizieR happened to emit first.
+        query = {
+            "-source": GAIA_SOURCE,
+            "-out": "RA_ICRS,DE_ICRS,pmRA,pmDE,Gmag,BP-RP",
+            "-c": f"{ra:.5f}{dec:+.5f}",
+            "-c.rd": f"{r:.4f}",
+            "Gmag": f"<{mag + 0.5:.2f}",     # G-V can reach ~ -0.5 for blue stars
+            "-sort": "Gmag",
+            "-out.max": str(STARS_CONE_ROW_CAP),
+        }
+        url = VIZIER_URL + "?" + urllib.parse.urlencode(query)
+        try:
+            raw = http_get(url)
+        except Exception as e:
+            if cached:
+                return self._respond(200, {**cached, "stale": True})
+            raise ApiError(502, f"VizieR fetch failed: {e}")
+
+        epoch_yr = 2000.0 + (time.time() - 946728000.0) / 31557600.0
+        stars, n_rows = parse_gaia_cone_tsv(raw.decode("utf-8", "replace"), mag, epoch_yr)
+        truncated = n_rows >= STARS_CONE_ROW_CAP or len(stars) > STARS_CONE_KEEP
+        stars.sort(key=lambda s: s[2])
+        del stars[STARS_CONE_KEEP:]
+        payload = {
+            "ok": True, "raDeg": ra, "decDeg": dec, "rDeg": r, "mag": mag,
+            "epochYr": round(epoch_yr, 3), "count": len(stars),
+            "truncated": truncated, "fetchedUnix": int(time.time()),
+            "stars": [[round(s[0], 5), round(s[1], 5), round(s[2] * 100)]
+                      for s in stars],
+        }
+        cache_write(key, payload)
+        prune_cache_family("stars_cone_", STARS_CONE_CACHE_N)
         self._respond(200, payload)
 
     def _catalog_full(self, qs):

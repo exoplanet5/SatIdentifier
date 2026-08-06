@@ -309,7 +309,12 @@ SAT.state.locations = [{ id, name, kind, latDeg, lonDeg, altM, norad, active: fa
 
 SAT.state.settings = {
   chart:  { stars:true, starNames:false, constLines:true, constNames:false,
-            sunMoon:true, mw:false, grid:true, magLimit:9.0, labels:true, padFrac:0.7 },
+            sunMoon:true, mw:false, grid:true, magAuto:true, magLimit:9.0,
+            labels:true, padFrac:0.7 },
+  // round 14: magAuto (default true) makes the chart's star depth follow the view
+  // span (see the chart section); magLimit is the pinned MANUAL limit, used only
+  // when magAuto is false. Old saved states lack magAuto and so pick up the
+  // adaptive default on first load — that migration is deliberate.
   allsky: { eastLeft:true, elStep:30, stars:true, sunMoon:true, mw:false },
   // round 12: allsky.magLimit retired — the All-Sky star field is the bright
   // catalogue only (see its panel section); a stored value is ignored.
@@ -782,6 +787,26 @@ with the right magnitude. It caught every one of the above. Keep it.
   `SAT.stars.constellationLines(ra0, dec0, radiusDeg) -> [[{raDeg,decDeg},...], ...]`
   — both from `SAT.stardata`; used for wide fields only.
 - `SAT.stars.isDeep() -> bool`.
+- `SAT.stars.localLimit() -> number` (round 14) — the live catalogue's magnitude
+  limit, read from the binary header (10.5 Gaia build / 9.0 Tycho / 4.6 on the
+  bright fallback). The chart compares its wanted depth against this to decide
+  when the online deep field is needed at all.
+- `SAT.stars.deepField(ra0, dec0, radiusDeg, magLimit, onReady)
+  -> {state:'ready'|'loading'|'error', stars, truncated}` (round 14) — the online
+  deep cone behind the chart's < 3° fields, served by `GET /api/stars/cone`.
+  Never throws and never rejects. The fetch centre snaps to a 0.05° grid and the
+  radius rounds UP to a bucket (0.75/1/1.25/1.5/2/2.5/3°, chosen ≥ radius + 0.06°
+  so the snapped disc still covers the request) — both quantisations exist so the
+  single-slot cache here AND the backend's disk cache get re-hit by the pans and
+  wheel-zoom steps of normal use instead of refetching per tick. A request covered
+  by the slot (same magLimit, sep(centres) + radius ≤ slot radius) returns
+  `'ready'` synchronously with the slot's stars (capped at the brightest 20000,
+  same as `cone`); anything else starts one fetch and returns `'loading'` with
+  `stars:null` — the chart draws the local catalogue until `onReady` fires (at
+  most once per completed fetch). A failed fetch parks the slot in `'error'`,
+  retried only after 30 s or when the requested disc changes: the packaged app
+  offline degrades to the local catalogue quietly, with a footer note, and does
+  not hammer the network per frame.
 
 `tools/make_starcat.py` fetches Tycho-2 from VizieR, keeps `VT ≤ 9.0`, converts to
 Johnson V, sorts by declination and writes the file. Dev-time only; the generated
@@ -807,15 +832,30 @@ view and gets the largest default window.
   chart matches their frame. Always visible; this is the thing people get wrong.
 - Layers, respecting `settings.chart` and redrawing on `time / obs-changed /
   scan-done / filters-changed / selection-changed / settings-changed / state-loaded`:
-  - **Chart star background (round 12 — deep catalogue, binding).** Stars from
-    `SAT.stars.cone` down to `settings.chart.magLimit` (m-limit toolbar button
-    cycles 4.5/6/7.5/9/11); radius/alpha follow the flux-law curve (round 9:
-    radius shrinks ~18 %/mag, area halves every ~1.8 mag) so the m 4–9 background
-    — where nearly every field star lives — reads as distinct sizes. A round-11
-    misreading briefly made this layer bright-catalogue-only; the deep background
-    is REAFFIRMED here — the SatObserver bright-only fallback belongs to the
-    **All-Sky panel** (see its section). Star names, constellation lines AND
-    constellation names (`constNames`, round 11) draw on fields wider than 5°.
+  - **Chart star background (round 14 — adaptive depth, binding).** Stars from
+    `SAT.stars.cone` down to an *effective* magnitude limit. Default is **auto**
+    (`settings.chart.magAuto`): the limit follows the view span D — the diameter
+    in degrees of the circle enclosing the viewport — via the pure helper
+    `SAT.chart.autoMagLimit(D)`:
+    - **D < 3°: 17.0**, served by the online deep field (`SAT.stars.deepField`
+      → `GET /api/stars/cone`, Gaia DR3 via VizieR). While that fetch is in
+      flight, has failed, or the app is offline, the local catalogue draws at
+      its own `localLimit()` and the footer says which of those it is.
+    - **D ≥ 3°: clamp(10.5 − 5·log10(D/3), 4.5, 10.5)** — 10.5 at 3°, 9 at 6°,
+      7.5 at 12°, 6 at 24°, floor 4.5 from ~48° up — entirely from the local
+      catalogue, so wide fields can never trigger a network fetch and star
+      counts stay bounded as the field grows.
+    The m-limit toolbar button cycles auto → 4.5/6/7.5/9/11 → auto (a manual
+    value pins `magLimit` and clears `magAuto`; the footer always states the
+    effective limit). Radius/alpha follow the flux-law curve (round 9: radius
+    shrinks ~18 %/mag, area halves every ~1.8 mag); at effective limits deeper
+    than 11 the faint tail is compressed into the display range the curve was
+    tuned for (`mdisp = 9 + 2·(m − 9)/(mlim − 9)` for m > 9) so bright stars
+    render identically at every depth and an m17 field grades down to the floor
+    instead of collapsing into uniform floor-size dots. Round-12 note kept: the
+    deep background is REAFFIRMED — the SatObserver bright-only fallback belongs
+    to the **All-Sky panel** (see its section). Star names, constellation lines
+    AND constellation names (`constNames`, round 11) draw on fields wider than 5°.
   - **Milky Way** isophote layer (`settings.chart.mw`, default off): the d3-celestial
     contours from `vendor/mwdata.js`, ported from the SatObserver polar chart to the
     gnomonic frame — far-hemisphere / near-90° vertices are clamped radially to an
@@ -1057,6 +1097,24 @@ launches and analyst objects are exactly the unidentified trails people are chas
   (`https://www.mmccants.org/programs/qsmag.zip`), extracted in memory and parsed to
   `{norad: stdMag}`. Cached 30 d as `qsmag.json`. Missing file ⇒ `{ok:true, mags:{}}`
   and the UI simply falls back to the RCS tier — never a hard failure.
+- `GET /api/stars/cone?ra=&dec=&r=&mag=[&refresh=1]` (round 14) — the chart's
+  online deep star field: a Gaia DR3 cone via VizieR `asu-tsv` (`-c`/`-c.rd`).
+  Guards: `r ≤ 3°`, `mag ≤ 18`, both 400 on violation — this endpoint exists for
+  narrow fields only; wide fields are the local catalogue's job. Fetches
+  `Gmag < mag + 0.5` sorted by `Gmag` with a 60 000-row request cap (the sort
+  makes the cap keep the brightest, not a dec-band slice), converts G→V
+  (Riello+ 2021 relation — the same one `make_starcat.py` uses), applies proper
+  motions from Gaia's epoch 2016.0 to the **current decimal year** (the local
+  asset is frozen at 2026.5; the online field keeps tracking), cuts to V ≤ mag
+  and keeps the brightest 20 000 — the frontend's own draw cap, so shipping more
+  JSON would only be dropped client-side. Response `{ok, raDeg, decDeg, rDeg,
+  mag, epochYr, count, truncated, fetchedUnix, stars:[[raDeg, decDeg, v100],
+  …]}`, positions rounded to 1e-5 deg (0.04″). Cached as
+  `stars_cone_<sha1(ra|dec|r|mag)[:12]>`; star fields do not go stale, so a
+  cache hit is served forever (`refresh=1` to force), and after each write the
+  `stars_cone_*` family is pruned to the 24 newest files (~15 MB ceiling) so
+  narrow-field browsing cannot grow the cache without bound. Network failure
+  with no cache ⇒ 502; the frontend degrades to the local catalogue.
 - `GET /api/state` payload carries `catalogRefs` (per-source cache keys) and
   `pasted` (inline pasted TLEs); cached catalogues themselves are never stored in
   `state.json`.
