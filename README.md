@@ -5,24 +5,9 @@
 by Zhuoxiao. It is not an official release of, affiliated with, or endorsed by
 the upstream project.
 
-The inverse of a satellite tracker. Instead of asking *where is this satellite*, it
-asks **who is in my field of view** — so an unidentified trail on a frame can be
-matched against the catalogue.
-
-Give it a site, an epoch and a timespan, a pointing (RA/Dec J2000, Alt/Az, or LVLH
-angles from orbit) and a field of view. It finds every catalogued object that
-crosses that field and draws each trail on a gnomonic sky chart over a real star
-background, directly comparable against your frame.
-
-The site itself can be a **satellite** (space-based SSA): pick any object in the
-loaded catalogue by NORAD number and the scan runs from *its* sensor — who crosses
-my field, seen from orbit.
-
-![SatOccult — sky chart with predicted trails, all-sky context view, crossings table and satellite info](docs/screenshot.png)
-
-Local Python backend (catalogue fetching, caching, persistence — standard library
-only) + browser frontend (SGP4 in Web Workers, canvas chart). Companion to
-[SatObserver-MX](../satobserver), sharing its architecture and its house style.
+SatOccult focuses on planning and searching satellite occultations: identifying
+when a satellite passes in front of a catalogue star, refining closest approach
+and contact times, and preparing an observing plan.
 
 Module APIs are in [CONTRACT.md](CONTRACT.md); how it was built and what was
 measured is in [DEVLOG.md](DEVLOG.md).
@@ -104,6 +89,9 @@ mode automatically when pywebview is available.
 
 ## Workflow
 
+SatOccult includes the ordinary crossing-identification workflow and the
+dedicated satellite-occultation workflow below.
+
 1. **Catalogue** — press *Load full catalogue* (Space-Track full GP; a free account
    is required and saved locally). Add CelesTrak single-object queries (NORAD /
    COSPAR / name-contains, no account needed — the same tab also downloads the full
@@ -119,7 +107,7 @@ mode automatically when pywebview is available.
 4. **Crossings** — press *Scan*.
 5. **Sky Chart** — compare the trails against your frame.
 
-## Nightly satellite-occultation search (P0-11)
+### Satellite-occultation workflow
 
 The occultation workflow is separate from the ordinary *Crossings* scan:
 
@@ -149,7 +137,7 @@ The occultation workflow is separate from the ordinary *Crossings* scan:
    Misses are counted but are not copied into the event table. The browser-only
    Pass/Candidate limit fields do not cap the native complete run.
 
-### Browser-independent complete search
+#### Browser-independent complete search
 
 For a full-catalogue run, use the headless process so the calculation is not
 held inside a browser tab:
@@ -303,7 +291,7 @@ tools/
   make_starcat.py          builds the star catalogue asset; --deep17 builds the
                            local V=17 tile set into data/stars17/ (gitignored)
   test_*.js                verification harnesses — see DEVLOG
-docs/                      screenshot
+docs/                      occultation contracts, decisions, and progress logs
 data/                      state, caches, credentials, deep star tiles (gitignored)
 ```
 
