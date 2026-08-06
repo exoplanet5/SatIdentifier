@@ -803,6 +803,63 @@ test_chart [13] pins the dot law's anchors (round-9 parity above the floor,
 cubic fade below it, exposure-shift equality m17@17 == m11@11, cutoff, bright
 compression, monotonicity).
 
+### Round 16 (2026-08-06) — the deep tiles go to m13, not m17
+
+The m17 build was too heavy — the user stopped it mid-download. Measured on
+the 1609 deg² (57 tiles) it had fetched before being stopped:
+
+| depth  | whole sky | tile set |
+|--------|-----------|----------|
+| V ≤ 11 | ~1M stars | ~10 MB   |
+| V ≤ 13 | ~6M       | ~60 MB   |
+| V ≤ 15 | ~32M      | ~320 MB  |
+| V ≤ 17 | ~137M     | ~1.4 GB  |
+
+(The round-15 "~45M / few hundred MB" estimate extrapolated two mid-density
+cones; the southern galactic-plane bands the build actually walked run
+3–10× denser.) The user chose **m13** — a 1° field still holds ~120 stars
+(~150/deg²), at 1/20th of m17's weight.
+
+- Depth is now data-driven end to end: `deepField()` reports the tile set's
+  `magLimit` from the index, and the chart's dot law keys its exposure shift
+  on the DELIVERED depth (`drawnMag = min(wanted, delivered)`), so a tile set
+  built at any `--vmax` renders honestly with no code change. The auto law's
+  deep branch asks for 13.
+- Renames, since "17" was in the names: `--deep17` → `--deep-tiles`,
+  `data/stars17/` → `data/deepstars/`, `DEEP_MAG_LIMIT = 13.0`.
+- The 57 already-fetched m17 tiles were NOT refetched: they contain m13 as a
+  subset, so a one-off filter cut them to V ≤ 13 (240 525 stars kept) and the
+  resumable builder picked up from there — zero wasted download.
+- No net change to the round-15 architecture or the Stellarium dot law; the
+  harness anchors moved to 13 where they pinned 17.
+
+Mid-build incident worth its lesson: CDS VizieR degraded ~30× on big box
+scans partway through the day (every query died on their ~2-minute execution
+cap and returned a truncated, nearly-empty result **with HTTP 200**), and the
+builder silently wrote five husk tiles before it was caught. Hardening: each
+tile response is now validated against a minimum plausible density (~1
+row/deg² — even the galactic poles hold ~25 stars/deg² at V ≤ 13), a sparse
+response is retried against the host list and then aborts the build resumably
+rather than writing junk. The CfA mirror turned out not to serve the gaiadr3
+table at all (instant empty result, so it stays in the list only as a cheap
+second opinion). Tiny probe queries recover long before full-size scans do —
+a service-health check must use the workload's own shape.
+
+### Round 17 (2026-08-06) — honest manual steps, deep tiles gated to narrow
+
+- The m-limit cycle is now auto → 4.5/6/7.5/9/**10.5**/**13** → auto: every
+  manual step exactly deliverable (10.5 = the bundled catalogue's full depth,
+  13 = the deep tiles'). The legacy **m11** step — an aspiration from the m9
+  Tycho days that the bundled file could only serve at 10.5 — is gone; a
+  saved m11 falls back to auto on the next press. This closes the
+  user-spotted discrepancy between the m11 toggle and the "m10.5 local"
+  footer.
+- **Deep tiles are gated to fields narrower than 3°** — the auto law's own
+  boundary — regardless of the pinned limit. A pinned m13 on a wide view
+  draws the bundled catalogue with a `wide field — m10.5 local` footer note;
+  without the gate a 40° pan would have churned dozens of tiles through the
+  16-tile LRU. test_chart [12] pins both sides of the gate.
+
 ## 13. Running the checks
 
 ```sh

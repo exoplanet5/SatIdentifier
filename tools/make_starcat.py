@@ -271,17 +271,19 @@ def parse_gaia_rows(text, v_limit):
 
 
 # ---------------------------------------------------------------------------
-# Deep tile set (round 15): data/stars17/ — Gaia DR3 to V = 17, tiled
+# Deep tile set (rounds 15-16): data/deepstars/ — Gaia DR3 to V = 13, tiled
 #
-# ~35-45M stars over the sky (measured ~900-1200/deg^2 at V<=17 in round-14
-# cones), several hundred MB — buildable locally, far past committable. The
-# frontend loads tiles on demand for < 3 deg views; see CONTRACT "Deep tile
-# set" for the binding scheme: 4 deg dec bands 0..44, single polar tiles at
-# |dec| >= 86, twelve 30 deg RA columns elsewhere, names t<band>_<col>.bin,
-# each tile the same STR1 binary as the bundled asset.
+# The depth is a deliberate size trade, measured on 1609 deg^2 of real fetched
+# sky (round 16): V<=11 ~1M stars/10 MB, V<=13 ~6M/60 MB, V<=15 ~32M/320 MB,
+# V<=17 ~137M/1.4 GB. m17 proved too heavy to build and store; m13 keeps a
+# 1 deg field populated (~150/deg^2) at 1/20th the weight and was chosen by
+# the user. The frontend loads tiles on demand for < 3 deg views; see CONTRACT
+# "Deep tile set" for the binding scheme: 4 deg dec bands 0..44, single polar
+# tiles at |dec| >= 86, twelve 30 deg RA columns elsewhere, names
+# t<band>_<col>.bin, each tile the same STR1 binary as the bundled asset.
 # ---------------------------------------------------------------------------
 
-DEEP_MAG_LIMIT = 17.0
+DEEP_MAG_LIMIT = 13.0
 DEEP_BAND_DEG = 4
 DEEP_COL_DEG = 30
 DEEP_FETCH_PAUSE = 0.3          # courtesy pause between the ~520 VizieR requests
@@ -300,7 +302,23 @@ def deep_tiles():
                    col * DEEP_COL_DEG, (col + 1) * DEEP_COL_DEG, de0, de1)
 
 
-def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0):
+# Load distribution and throttle escape: the CDS host first, then the CfA
+# mirror. Round 16 measured CDS throttling a long build session down to ~2 kB
+# responses after ~600 MB pulled in a day — WITHOUT an error status, so the
+# sparse-tile validation in build_deep_tiles() is what actually catches it.
+VIZIER_HOSTS = [
+    VIZIER_URL,
+    "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv",
+]
+
+
+def tile_area_deg2(ra0, ra1, de0, de1):
+    """Solid angle of an RA/Dec box in square degrees."""
+    return (ra1 - ra0) * math.degrees(
+        math.sin(math.radians(de1)) - math.sin(math.radians(de0)))
+
+
+def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0, base=None):
     """Gaia DR3 rows in an RA/Dec box as TSV text, splitting in RA when the
     response trips the size guard (the Baade-window class of tile).
 
@@ -315,7 +333,7 @@ def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0):
         "Gmag": "<%.2f" % g_limit,
         "-out.max": "unlimited",
     }
-    url = VIZIER_URL + "?" + urllib.parse.urlencode(query)
+    url = (base or VIZIER_URL) + "?" + urllib.parse.urlencode(query)
     for attempt in (1, 2):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -333,8 +351,8 @@ def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0):
                                    (MAX_BYTES >> 20))
             mid = 0.5 * (ra0 + ra1)
             print("    over size guard — splitting RA at %.2f" % mid, flush=True)
-            return (fetch_gaia_box(ra0, mid, de0, de1, g_limit, depth + 1) +
-                    fetch_gaia_box(mid, ra1, de0, de1, g_limit, depth + 1))
+            return (fetch_gaia_box(ra0, mid, de0, de1, g_limit, depth + 1, base) +
+                    fetch_gaia_box(mid, ra1, de0, de1, g_limit, depth + 1, base))
         except (urllib.error.URLError, OSError) as e:
             if attempt == 2:
                 raise
@@ -342,7 +360,7 @@ def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0):
             time.sleep(5)
 
 
-def build_deep17(out_dir, bright_path, vmax):
+def build_deep_tiles(out_dir, bright_path, vmax):
     """Build the deep tile set. Resumable: existing tiles are skipped, and the
     index (the frontend's presence signal) is written only when every tile is
     done, so a half-finished build never reads as present."""
@@ -369,8 +387,25 @@ def build_deep17(out_dir, bright_path, vmax):
             continue
         print("[%3d/%d] %s  RA %g..%g Dec %g..%g" %
               (i + 1, len(todo), name, ra0, ra1, de0, de1), flush=True)
-        text = fetch_gaia_box(ra0, ra1, de0, de1, vmax + 0.5)
-        stars, skipped = parse_gaia_rows(text, vmax)
+        # A throttled VizieR answers HTTP 200 with a near-empty body — no error
+        # status at all — so the only reliable check is astronomical: even the
+        # galactic poles hold ~25 stars/deg^2 at V<=13, so a tile with under
+        # ~1 row/deg^2 is a broken response, not sky. Try each host once;
+        # abort (resumably) rather than write a corrupt tile.
+        floor_rows = max(20, tile_area_deg2(ra0, ra1, de0, de1))
+        stars = None
+        for base in VIZIER_HOSTS:
+            text = fetch_gaia_box(ra0, ra1, de0, de1, vmax + 0.5, base=base)
+            rows, skipped = parse_gaia_rows(text, vmax)
+            if len(rows) + skipped >= floor_rows:
+                stars = rows
+                break
+            print("    implausibly sparse (%d rows, floor %d) from %s — "
+                  "throttled?" % (len(rows) + skipped, floor_rows, base), flush=True)
+        if stars is None:
+            raise RuntimeError(
+                "every VizieR host returned a sparse/truncated response for %s "
+                "— likely throttled; rerun later, the build resumes" % name)
         # clip the bright merge to the tile (with margin for the match radius)
         m = MATCH_ARCSEC / 3600.0 * 2
         sub = [s for s in bright
@@ -559,16 +594,16 @@ def main():
                          "proper motions applied to epoch %.1f" % TARGET_EPOCH)
     ap.add_argument("--vmax", type=float, default=None,
                     help="V limit written to the file (default 9.0 tycho2 / 10.5 gaia)")
-    ap.add_argument("--deep17", action="store_true",
-                    help="build the deep tile set (default out: data/stars17/, "
-                         "gitignored; V <= 17; resumable — rerun to continue)")
+    ap.add_argument("--deep-tiles", action="store_true",
+                    help="build the deep tile set (default out: data/deepstars/, "
+                         "gitignored; V <= 13; resumable — rerun to continue)")
     args = ap.parse_args()
 
-    if args.deep17:
+    if args.deep_tiles:
         vmax = args.vmax if args.vmax else DEEP_MAG_LIMIT
         out_dir = args.out if args.out != str(DEFAULT_OUT) \
-            else str(SCRIPT_DIR.parent / "data" / "stars17")
-        return build_deep17(out_dir, args.bright, vmax)
+            else str(SCRIPT_DIR.parent / "data" / "deepstars")
+        return build_deep_tiles(out_dir, args.bright, vmax)
 
     global MAG_LIMIT
     if args.source == "gaia":

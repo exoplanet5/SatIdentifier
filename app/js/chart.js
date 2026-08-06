@@ -354,13 +354,15 @@
 
   /** The auto-mode star depth for a field `fieldDeg` degrees across (the
    *  enclosing-circle diameter). Pure; unit-tested in tools/test_chart.js.
-   *  Below 3° the online Gaia depth (m17) — the frame-matching case; from 3° up
-   *  the local catalogue sheds half a magnitude per ~1.15x of field growth:
+   *  Below 3° the deep tile set's depth — m13 since round 16 (m17 measured
+   *  ~1.4 GB of tiles; m13 is ~60 MB and keeps a 1° field populated at
+   *  ~150 stars/deg² — the user's chosen trade); from 3° up the bundled
+   *  catalogue sheds half a magnitude per ~1.15x of field growth:
    *  10.5 at 3°, 9 at 6°, 7.5 at 12°, 6 at 24°, floor 4.5 from ~48° up.
    *  Quantised to 0.1 mag so wheel-zoom ticks don't re-query per frame. */
   function autoMagLimit(fieldDeg) {
     if (!(fieldDeg > 0)) return 10.5;
-    if (fieldDeg < 3) return 17;
+    if (fieldDeg < 3) return 13;
     var m = 10.5 - 5 * Math.log(fieldDeg / 3) / Math.LN10;
     return Math.round(Math.max(4.5, Math.min(10.5, m)) * 10) / 10;
   }
@@ -422,23 +424,34 @@
     var deepState = null, deepTrunc = false;
     var localLim = (typeof SAT.stars.localLimit === 'function')
       ? SAT.stars.localLimit() : Infinity;
+    var df = null;
     if (magLimit > localLim + 0.01 && typeof SAT.stars.deepField === 'function') {
-      // Wanted depth is beyond the bundled catalogue: ask the deep tile set.
-      // While tiles load (or when the set is not built) the local cone below
-      // still draws, so the chart never blanks — it deepens when tiles land.
-      var df = SAT.stars.deepField(ra0, dec0, q, magLimit, onDeepField);
-      deepState = df.state;
-      if (df.state === 'ready') {
-        stars = df.stars || [];
-        deepTrunc = !!df.truncated;
+      if (2 * radiusDeg >= 3) {
+        // Round 17: deep tiles serve narrow fields ONLY — the same < 3°
+        // boundary as the auto law. A pinned deep limit on a wide view would
+        // otherwise churn dozens of tiles through the LRU on every pan; the
+        // footer says the field is the reason the drawn depth is shallower.
+        deepState = 'wide';
+      } else {
+        // Wanted depth is beyond the bundled catalogue: ask the deep tile set.
+        // While tiles load (or when the set is not built) the local cone below
+        // still draws, so the chart never blanks — it deepens when tiles land.
+        df = SAT.stars.deepField(ra0, dec0, q, magLimit, onDeepField);
+        deepState = df.state;
+        if (df.state === 'ready') {
+          stars = df.stars || [];
+          deepTrunc = !!df.truncated;
+        }
       }
     }
     if (deepState !== 'ready') {
       try { stars = SAT.stars.cone(ra0, dec0, q, magLimit) || []; } catch (e) { stars = []; }
     }
     // What depth is actually on screen: the star-dot law keys its exposure
-    // shift on this, so a deep request served shallow renders honestly.
-    var drawnMag = (deepState === 'ready') ? magLimit
+    // shift on this, so a deep request served shallow renders honestly —
+    // including a tile set built to a lighter cut than the wanted limit.
+    var drawnMag = (deepState === 'ready')
+      ? Math.min(magLimit, (df && df.magLimit) || magLimit)
       : Math.min(magLimit, isFinite(localLim) ? localLim : magLimit);
     try {
       if (typeof SAT.stars.named === 'function') named = SAT.stars.named(ra0, dec0, q) || [];
@@ -1270,6 +1283,9 @@
       } else if (starCache.deepState === 'error') {
         mtxt += ' · deep tiles not built — m' +
           (starCache.drawnMag != null ? starCache.drawnMag.toFixed(1) : '?') + ' local';
+      } else if (starCache.deepState === 'wide') {
+        mtxt += ' · wide field — m' +
+          (starCache.drawnMag != null ? starCache.drawnMag.toFixed(1) : '?') + ' local';
       }
       foot.push(mtxt);
     }
@@ -1499,9 +1515,13 @@
       tbtn('grid', '#', 'RA/Dec grid', toggleLayer('grid')),
       tbtn('labels', 'Ab', 'satellite labels', toggleLayer('labels')),
       tbtn('mag', 'mA', 'star magnitude limit — mA adapts to the field '
-        + '(m17 online below 3°, shallower as the field grows)', function () {
+        + '(deep tiles to m13 below 3°, shallower as the field grows)', function () {
         var c = cfg();
-        var steps = [4.5, 6, 7.5, 9, 11];
+        // Round 17: every manual step is exactly deliverable — 10.5 is the
+        // bundled catalogue's full depth, 13 the deep tiles'. The legacy m11
+        // step (m9-Tycho-era aspiration the bundled file served at 10.5) is
+        // gone; a saved m11 is not in this list, so it falls back to auto.
+        var steps = [4.5, 6, 7.5, 9, 10.5, 13];
         if (c.magAuto) {
           c.magAuto = false; c.magLimit = steps[0];
         } else {

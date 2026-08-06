@@ -122,11 +122,14 @@ section [o]).
   mount sees, and the trail drawn across the field between entry and exit is the
   thing to hold up against your frame.
 - **Adaptive star background** on the sky chart: the depth follows the field.
-  Views narrower than 3° draw **Gaia DR3 down to V = 17** from a local tiled star
-  database (`data/stars17/`, ~45M stars — build it once with
-  `python3 tools/make_starcat.py --deep17`; no network is ever touched at runtime,
-  and for the packaged app the tile directory belongs in its data folder, e.g.
-  `~/Library/Application Support/SatIdentifier/stars17/` on macOS). Wider views
+  Views narrower than 3° draw **Gaia DR3 down to V = 13** from a local tiled star
+  database (`data/deepstars/`, ~6M stars / ~60 MB — build it once with
+  `python3 tools/make_starcat.py --deep-tiles`; no network is ever touched at
+  runtime, and for the packaged app the tile directory belongs in its data
+  folder, e.g. `~/Library/Application Support/SatIdentifier/deepstars/` on
+  macOS — a symlink works. The depth is a measured size trade: V ≤ 11 would be
+  ~10 MB but adds little over the bundled set, V ≤ 15 ~320 MB, V ≤ 17 ~1.4 GB —
+  m13 keeps a 1° field populated at ~150 stars/deg² for 60 MB). Wider views
   draw from the bundled catalogue (Gaia DR3 to V = 10.5, 549 037 stars, proper
   motions applied; BSC5/HYG photometry at the bright end), shedding depth as the
   field grows — m 10.5 at 3° down to m 4.5 at ≥ 48° — so a wide chart never drowns
@@ -210,8 +213,8 @@ app/
   js/allsky.js             all-sky context view with the FOV footprint
   js/state.js  util.js  clock.js  windows.js  sources.js  locations.js  satinfo.js
 tools/
-  make_starcat.py          builds the star catalogue asset; --deep17 builds the
-                           local V=17 tile set into data/stars17/ (gitignored)
+  make_starcat.py          builds the star catalogue asset; --deep-tiles builds
+                           the local V=13 tile set into data/deepstars/ (gitignored)
   test_*.js                verification harnesses — see DEVLOG
 docs/                      screenshot
 data/                      state, caches, credentials, deep star tiles (gitignored)

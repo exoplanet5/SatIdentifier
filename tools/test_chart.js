@@ -511,8 +511,8 @@ console.log('\n[11] extended pass track');
 console.log('\n[12] adaptive star depth (rounds 14/15)');
 {
   const A = C.autoMagLimit;
-  ok('law: 2° field -> 17 (deep tiles)', A(2) === 17, 'got ' + A(2));
-  ok('law: 2.99° -> 17, strict boundary', A(2.99) === 17, 'got ' + A(2.99));
+  ok('law: 2° field -> 13 (deep tiles)', A(2) === 13, 'got ' + A(2));
+  ok('law: 2.99° -> 13, strict boundary', A(2.99) === 13, 'got ' + A(2.99));
   ok('law: 3° -> 10.5 (local catalogue limit)', A(3) === 10.5, 'got ' + A(3));
   ok('law: 6° -> 9.0', A(6) === 9, 'got ' + A(6));
   ok('law: 12° -> 7.5', A(12) === 7.5, 'got ' + A(12));
@@ -573,18 +573,18 @@ console.log('\n[12] adaptive star depth (rounds 14/15)');
   });
   C.fitView();
 
-  ok('narrow auto view consulted deepField at m17',
-    deepCalls.length >= 1 && deepCalls[deepCalls.length - 1].mag === 17,
+  ok('narrow auto view consulted deepField at m13',
+    deepCalls.length >= 1 && deepCalls[deepCalls.length - 1].mag === 13,
     deepCalls.length + ' calls, mag ' + (deepCalls.length ? deepCalls[deepCalls.length - 1].mag : '—'));
   ok('local cone drew the interim field at the same limit',
-    coneMags.length >= 1 && coneMags[coneMags.length - 1] === 17,
+    coneMags.length >= 1 && coneMags[coneMags.length - 1] === 13,
     'cone mags: ' + coneMags.join(','));
 
   // the fetch lands: onReady must invalidate and re-render, and the re-query
   // must take the online stars instead of the local cone
   const deepStars = [];
   for (let k = 0; k < 120; k++) {
-    deepStars.push({ raDeg: RA0 + 2 + (k % 12 - 6) * 0.1, decDeg: DEC0 + (Math.floor(k / 12) - 5) * 0.1, mag: 11 + (k % 7) });
+    deepStars.push({ raDeg: RA0 + 2 + (k % 12 - 6) * 0.1, decDeg: DEC0 + (Math.floor(k / 12) - 5) * 0.1, mag: 10 + (k % 3) });
   }
   deepAnswer = { state: 'ready', stars: deepStars, truncated: false };
   const cones0 = coneMags.length, arcs0 = calls.arc || 0;
@@ -610,6 +610,21 @@ console.log('\n[12] adaptive star depth (rounds 14/15)');
   ok('wide auto field stays local and shallow',
     deepCalls.length === deeps1 && wideMag < 10.5 + 1e-9 && wideMag >= 4.5,
     'cone mag ' + wideMag);
+
+  // round 17: a pinned deep limit obeys the narrow-field gate — wide views
+  // must never touch the tiles, however deep the pin.
+  const deeps2 = deepCalls.length;
+  Object.assign(SAT.state.settings.chart, { magAuto: false, magLimit: 13 });
+  Object.assign(SAT.state.obs, { fovWDeg: 30, fovHDeg: 20, raDeg: RA0 + 4 });
+  C.fitView();
+  ok('pinned m13 on a wide field never touches the tiles',
+    deepCalls.length === deeps2 && coneMags[coneMags.length - 1] === 13,
+    (deepCalls.length - deeps2) + ' deep calls, cone mag ' + coneMags[coneMags.length - 1]);
+  Object.assign(SAT.state.obs, { fovWDeg: 1.5, fovHDeg: 1.0, raDeg: RA0 + 8 });
+  C.fitView();
+  ok('pinned m13 on a narrow field uses the tiles',
+    deepCalls.length === deeps2 + 1 && deepCalls[deepCalls.length - 1].mag === 13,
+    (deepCalls.length - deeps2) + ' deep calls');
 }
 
 // ---------------------------------------------------------------- test 13

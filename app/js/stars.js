@@ -258,11 +258,11 @@
     return out;
   }
 
-  // ---- deep tile set (round 15) --------------------------------------------
-  // The chart's < 3° views want V = 17 — tens of millions of stars over the
-  // sky, far past anything bundleable OR committable — so the depth lives in a
-  // LOCAL tile set (data/stars17/, built once by make_starcat.py --deep17) and
-  // tiles are loaded on demand from the local server. The round-14 online
+  // ---- deep tile set (rounds 15-16) ----------------------------------------
+  // The chart's < 3° views go deeper than the bundled catalogue — V = 13 since
+  // round 16 (the m17 build measured ~1.4 GB, m13 is ~60 MB; user's call) — in
+  // a LOCAL tile set (data/deepstars/, built once by make_starcat.py
+  // --deep-tiles) loaded on demand from the local server. The round-14 online
   // VizieR fetch is gone: no runtime network access, and the states below are
   // about local files only. Scheme (CONTRACT "Deep tile set"): 4° dec bands
   // 0..44, single polar tiles at |dec| >= 86, twelve 30° RA columns elsewhere.
@@ -315,10 +315,12 @@
 
   /** Deep star source for the chart's narrow fields, from the local tile set.
    *  Never throws, never rejects. Returns {state:'ready'|'loading'|'error',
-   *  stars, truncated}; while not 'ready' the caller draws the bundled
-   *  catalogue instead. 'error' means the tile set is not built (or the local
-   *  server went away) — parked until the next page load, no retry storm.
-   *  onReady fires when the probe or an outstanding tile batch completes. */
+   *  stars, truncated} plus, when ready, `magLimit` — the tile set's actual
+   *  V cut, which the chart's dot law keys on (a build shallower than the
+   *  wanted depth must render as what it is). While not 'ready' the caller
+   *  draws the bundled catalogue instead. 'error' means the tile set is not
+   *  built (or the local server went away) — parked until the next page load,
+   *  no retry storm. onReady fires when the probe or a tile batch completes. */
   function deepField(ra0, dec0, radiusDeg, magLimit, onReady) {
     const fail = { state: 'error', stars: null, truncated: false };
     if (deepBroken || (deepIdx && !deepIdx.present)) return fail;
@@ -372,7 +374,10 @@
       tileCache.delete(nm); tileCache.set(nm, t);   // LRU touch
       coneInto(t, ra0, dec0, radiusDeg, lim100, out);
     }
-    return { state: 'ready', stars: out, truncated: capBrightest(out) };
+    return {
+      state: 'ready', stars: out, truncated: capBrightest(out),
+      magLimit: deepIdx.magLimit,
+    };
   }
 
   // ---- status --------------------------------------------------------------

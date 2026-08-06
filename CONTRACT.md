@@ -792,45 +792,50 @@ with the right magnitude. It caught every one of the above. Keep it.
   bright fallback). The chart compares its wanted depth against this to decide
   when the deep tile set is needed at all.
 - `SAT.stars.deepField(ra0, dec0, radiusDeg, magLimit, onReady)
-  -> {state:'ready'|'loading'|'error', stars, truncated}` (round 15 — LOCAL deep
-  tiles; the round-14 online VizieR cone is REMOVED, no runtime network fetch) —
-  the deep star source behind the chart's < 3° fields, reading the tiled local
-  catalogue that `make_starcat.py --deep17` builds (see below) through
-  `GET /api/stars/deep` (presence probe, once) and `GET /api/stars/tile/<name>`
-  (one small binary per tile, LRU-cached ~16 tiles in memory). Never throws,
-  never rejects. When every tile covering the cone is cached the result is
-  computed synchronously — per-tile cone queries (the same kernel `cone()` uses)
-  merged and capped at the brightest 20000 — and the state is `'ready'`;
-  missing tiles are fetched (local server, milliseconds) and `'loading'` returns
-  with `stars:null`, the chart drawing the bundled catalogue until `onReady`
-  fires. If the tile set has not been built (probe says absent, or a tile 404s)
-  the state parks in `'error'` and the chart stays on the bundled catalogue with
-  a footer note saying the deep catalogue is not built — quietly, no per-frame
+  -> {state:'ready'|'loading'|'error', stars, truncated, magLimit?}` (rounds
+  15-16 — LOCAL deep tiles; the round-14 online VizieR cone is REMOVED, no
+  runtime network fetch) — the deep star source behind the chart's < 3° fields,
+  reading the tiled local catalogue that `make_starcat.py --deep-tiles` builds
+  (see below) through `GET /api/stars/deep` (presence probe, once) and
+  `GET /api/stars/tile/<name>` (one small binary per tile, LRU-cached ~16 tiles
+  in memory). Never throws, never rejects. When every tile covering the cone is
+  cached the result is computed synchronously — per-tile cone queries (the same
+  kernel `cone()` uses) merged and capped at the brightest 20000 — and the
+  state is `'ready'` with `magLimit` reporting the tile set's actual V cut (the
+  chart's dot law keys on this delivered depth, not the wanted one); missing
+  tiles are fetched (local server, milliseconds) and `'loading'` returns with
+  `stars:null`, the chart drawing the bundled catalogue until `onReady` fires.
+  If the tile set has not been built (probe says absent, or a tile 404s) the
+  state parks in `'error'` and the chart stays on the bundled catalogue with a
+  footer note saying the deep catalogue is not built — quietly, no per-frame
   retries (re-probe only on a fresh page load).
 - `SAT.stars.tilesForCone(ra0, dec0, radiusDeg) -> [name, ...]` (round 15, pure,
   unit-tested) — the tile names covering a cone under the scheme below, handling
   the RA wrap and the polar caps.
 
-**Deep tile set** (round 15): `data/stars17/` (gitignored — several hundred MB;
-per-machine, built once by the user; the packaged app reads it from its own
-DATA_DIR, so copy or rebuild it into Application Support for the .app). Scheme:
-4° declination bands indexed 0..44 from −90; bands with |dec| ≥ 86 are single
-polar tiles, every other band splits into twelve 30° RA columns; names are
-`t<band>_<col>.bin` (polar caps use col 0). Each tile is the same STR1
-structure-of-arrays binary as the bundled asset (header magLimit = the build's
-V cut), dec-sorted for the shared cone kernel. `index.json` records
-`{magLimit, count, tiles, builtIso, epochYr}` and is what the presence probe
-serves. Gaia DR3 via VizieR per tile (Gmag < cut + 0.5, G→V by Riello+ 2021,
-proper motions to the build-time decimal year), with the BSC5 bright-star merge
-applied per tile — Gaia genuinely lacks its saturated brightest stars (Vega,
-Sirius class), and a 2° field containing Vega must still show Vega. A fetch
-that trips the size guard splits recursively in RA. The build is resumable:
-tiles whose file already exists are skipped.
+**Deep tile set** (rounds 15-16): `data/deepstars/` (gitignored — ~60 MB at the
+round-16 depth of V = 13; per-machine, built once by the user; the packaged app
+reads it from its own DATA_DIR, so copy, rebuild or symlink it into Application
+Support for the .app). Scheme: 4° declination bands indexed 0..44 from −90;
+bands with |dec| ≥ 86 are single polar tiles, every other band splits into
+twelve 30° RA columns; names are `t<band>_<col>.bin` (polar caps use col 0).
+Each tile is the same STR1 structure-of-arrays binary as the bundled asset
+(header magLimit = the build's V cut — the frontend trusts the header and the
+index, so a set built at another depth stays honest end to end), dec-sorted for
+the shared cone kernel. `index.json` records `{magLimit, count, tiles,
+builtIso, epochYr}` and is what the presence probe serves; it is written ONLY
+on completion, so a half-finished build reads as absent. Gaia DR3 via VizieR
+per tile (Gmag < cut + 0.5, G→V by Riello+ 2021, proper motions to the
+build-time decimal year), with the BSC5 bright-star merge applied per tile —
+Gaia genuinely lacks its saturated brightest stars (Vega, Sirius class), and a
+2° field containing Vega must still show Vega. A fetch that trips the size
+guard splits recursively in RA. The build is resumable: tiles whose file
+already exists are skipped.
 
 `tools/make_starcat.py` fetches Tycho-2 from VizieR, keeps `VT ≤ 9.0`, converts to
 Johnson V, sorts by declination and writes the file. Dev-time only; the generated
 asset is committed so users never need it. `--source gaia` builds the deeper
-bundled asset; `--deep17` (round 15) builds the deep tile set above.
+bundled asset; `--deep-tiles` (rounds 15-16) builds the deep tile set above.
 
 ## Panel modules (window content)
 
@@ -857,18 +862,33 @@ view and gets the largest default window.
     is **auto** (`settings.chart.magAuto`): the limit follows the view span D —
     the diameter in degrees of the circle enclosing the viewport — via the pure
     helper `SAT.chart.autoMagLimit(D)`:
-    - **D < 3°: 17.0**, served by the LOCAL deep tile set through
+    - **D < 3°: 13.0**, served by the LOCAL deep tile set through
       `SAT.stars.deepField` (round 15; the round-14 online VizieR fetch is
-      REMOVED — no runtime network access, ever). While tiles load (local
+      REMOVED — no runtime network access, ever). The depth is a measured
+      size trade set in round 16: on 1609 deg² of fetched sky, V≤11 ≈ 1M
+      stars/10 MB, V≤13 ≈ 6M/60 MB, V≤15 ≈ 32M/320 MB, V≤17 ≈ 137M/1.4 GB —
+      m17 proved too heavy and the user chose m13. While tiles load (local
       server, milliseconds) or when the tile set has not been built, the
       bundled catalogue draws at its own `localLimit()` and the footer says
-      which of those it is.
+      which of those it is; should a tile build be shallower or deeper than
+      this law asks, the dot law keys on the DELIVERED depth
+      (`deepField().magLimit`), never the wanted one.
     - **D ≥ 3°: clamp(10.5 − 5·log10(D/3), 4.5, 10.5)** — 10.5 at 3°, 9 at 6°,
       7.5 at 12°, 6 at 24°, floor 4.5 from ~48° up — entirely from the bundled
       catalogue, so star counts stay bounded as the field grows.
-    The m-limit toolbar button cycles auto → 4.5/6/7.5/9/11 → auto (a manual
-    value pins `magLimit` and clears `magAuto`; the footer always states the
-    effective limit).
+    The m-limit toolbar button cycles auto → 4.5/6/7.5/9/**10.5**/**13** → auto
+    (round 17: every manual step is exactly deliverable — 10.5 is the bundled
+    catalogue's full depth and 13 the deep tiles'; the legacy m11 step, an
+    aspirational leftover from the m9 Tycho era that the bundled file could
+    only serve at 10.5, is gone. A manual value pins `magLimit` and clears
+    `magAuto`; a saved m11 from an older state falls back to auto on the next
+    press; the footer always states the effective limit).
+    **Deep tiles are gated to narrow fields (round 17):** `deepField` is
+    consulted only when the view span D < 3° — the same boundary as the auto
+    law — regardless of the pinned limit. A pinned m13 on a wide field draws
+    the bundled catalogue and the footer says `wide field — m10.5 local`; this
+    is what bounds tile I/O (a 40° view would otherwise churn dozens of tiles
+    through the 16-tile LRU every pan).
     **Star rendering (round 15 — Stellarium-derived, binding).** The mapping
     from magnitude to dot follows Stellarium's `StelSkyDrawer::computeRCMag`
     design, adapted to a fixed-tone canvas (pure helper
@@ -1138,7 +1158,7 @@ launches and analyst objects are exactly the unidentified trails people are chas
   and the UI simply falls back to the RCS tier — never a hard failure.
 - `GET /api/stars/deep` (round 15) — presence probe for the deep tile set:
   `{ok, present}` plus, when present, the `index.json` fields
-  `{magLimit, count, tiles, builtIso, epochYr}`. Reads `DATA_DIR/stars17/`;
+  `{magLimit, count, tiles, builtIso, epochYr}`. Reads `DATA_DIR/deepstars/`;
   never touches the network (the round-14 online `/api/stars/cone` endpoint is
   REMOVED — the backend does no star fetching at runtime at all).
 - `GET /api/stars/tile/<name>` (round 15) — one deep tile as raw bytes

@@ -55,7 +55,7 @@ if IS_BUNDLED:
 else:
     DATA_DIR = SCRIPT_DIR / "data"
 CACHE_DIR = DATA_DIR / "cache"
-STARS17_DIR = DATA_DIR / "stars17"   # deep star tiles (round 15), user-built
+DEEPSTARS_DIR = DATA_DIR / "deepstars"   # deep star tiles (rounds 15-16), user-built
 STATE_PATH = DATA_DIR / "state.json"
 CONFIG_PATH = DATA_DIR / "config.json"
 
@@ -70,9 +70,10 @@ CELESTRAK_NAME_URL = "https://celestrak.org/NORAD/elements/gp.php?NAME={name}&FO
 SATCAT_URL = "https://celestrak.org/satcat/records.php?CATNR={norad}&FORMAT=JSON"
 SATCAT_BULK_URL = "https://celestrak.org/pub/satcat.csv"
 QSMAG_URL = "https://www.mmccants.org/programs/qsmag.zip"
-# Round 15: the chart's deep star field is a LOCAL tile set (data/stars17/,
-# built once by tools/make_starcat.py --deep17) — the round-14 online VizieR
-# cone endpoint is gone; the backend does no star fetching at runtime.
+# Rounds 15-16: the chart's deep star field is a LOCAL tile set
+# (data/deepstars/, V <= 13, built once by tools/make_starcat.py --deep-tiles)
+# — the round-14 online VizieR cone endpoint is gone; the backend does no star
+# fetching at runtime.
 STARS_TILE_RE = re.compile(r"^t\d{1,2}_\d{1,2}\.bin$")
 SPACETRACK_BASE = "https://www.space-track.org"
 SPACETRACK_LOGIN = SPACETRACK_BASE + "/ajaxauth/login"
@@ -950,7 +951,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         (or still-running) build correctly reads as absent here.
         """
         try:
-            idx = json.loads((STARS17_DIR / "index.json").read_text(encoding="utf-8"))
+            idx = json.loads((DEEPSTARS_DIR / "index.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return self._respond(200, {"ok": True, "present": False})
         return self._respond(200, {"ok": True, "present": True, **idx})
@@ -964,7 +965,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not STARS_TILE_RE.match(name):
             raise ApiError(400, "Bad tile name")
         try:
-            data = (STARS17_DIR / name).read_bytes()
+            data = (DEEPSTARS_DIR / name).read_bytes()
         except OSError:
             raise ApiError(404, f"No such tile: {name} (deep set not built?)")
         self.send_response(200)

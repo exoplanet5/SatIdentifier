@@ -242,7 +242,7 @@ function fmt(v) {
       const b = Buffer.alloc(12 + 10 * n);
       b.write('STR1', 0, 'ascii');
       b.writeUInt32LE(n, 4);
-      b.writeFloatLE(17.0, 8);
+      b.writeFloatLE(13.0, 8);
       rows.forEach((s, i) => {
         b.writeFloatLE(s[0], 12 + 4 * i);
         b.writeFloatLE(s[1], 12 + 4 * n + 4 * i);
@@ -255,7 +255,7 @@ function fmt(v) {
     let present = true;
     const TILES = {
       't27_3.bin': tileBytes([
-        [100.0, 20.0, 850], [100.1, 20.0, 1450], [99.9, 20.05, 1690],
+        [100.0, 20.0, 850], [100.1, 20.0, 1150], [99.9, 20.05, 1290],
         [105.0, 21.9, 300],                       // in the tile, outside the cone
       ]),
     };
@@ -264,7 +264,7 @@ function fmt(v) {
       if (u === '/api/stars/deep') {
         reqs.push(u);
         return { ok: true, status: 200,
-                 json: async () => ({ ok: true, present: present, magLimit: 17, count: 4 }) };
+                 json: async () => ({ ok: true, present: present, magLimit: 13, count: 4 }) };
       }
       if (u.startsWith('/api/stars/tile/')) {
         reqs.push(u);
@@ -297,34 +297,34 @@ function fmt(v) {
     const onReady = () => readyCount++;
     const settle = () => new Promise((res) => setImmediate(res));
 
-    let r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    let r = D.deepField(100.013, 20.019, 1.08, 13, onReady);
     ok('first call probes the index, loading', r.state === 'loading' && reqs[0] === '/api/stars/deep');
     await settle();
     ok('probe completion fired onReady', readyCount === 1, 'fired ' + readyCount);
-    r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    r = D.deepField(100.013, 20.019, 1.08, 13, onReady);
     ok('second call fetches the covering tile, loading',
       r.state === 'loading' && reqs[1] === '/api/stars/tile/t27_3.bin', reqs[1]);
     await settle();
     ok('tile arrival fired onReady', readyCount === 2, 'fired ' + readyCount);
-    r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    r = D.deepField(100.013, 20.019, 1.08, 13, onReady);
     ok('now ready with the cone subset of the tile',
       r.state === 'ready' && r.stars.length === 3, r.stars && r.stars.length + ' stars');
     ok('v100 decoded to magnitudes',
-      r.stars.every((s) => [8.5, 14.5, 16.9].some((v) => Math.abs(s.mag - v) < 1e-3)));
+      r.stars.every((s) => [8.5, 11.5, 12.9].some((v) => Math.abs(s.mag - v) < 1e-3)));
     ok('magLimit filters within the tile',
-      D.deepField(100.013, 20.019, 1.08, 12, onReady).stars.length === 1);
-    r = D.deepField(100.2, 20.1, 0.9, 17, onReady);
+      D.deepField(100.013, 20.019, 1.08, 12, onReady).stars.length === 2);
+    r = D.deepField(100.2, 20.1, 0.9, 13, onReady);
     ok('pan inside the tile stays ready, no new request',
       r.state === 'ready' && reqs.length === 2, reqs.length + ' reqs');
 
     // ---- not built: 404 tile parks the whole feature ----
     const warn = console.warn; console.warn = () => {};   // the 404 warns; expected
-    r = D.deepField(200, -40, 1, 17, onReady);            // t12_6-ish: not in TILES
+    r = D.deepField(200, -40, 1, 13, onReady);            // t12_6-ish: not in TILES
     ok('missing tile starts as loading', r.state === 'loading');
     await settle();
-    r = D.deepField(200, -40, 1, 17, onReady);
+    r = D.deepField(200, -40, 1, 13, onReady);
     ok('404 parks deepField in error', r.state === 'error');
-    r = D.deepField(100.013, 20.019, 1.08, 17, onReady);
+    r = D.deepField(100.013, 20.019, 1.08, 13, onReady);
     ok('…for every field, with no retry storm',
       r.state === 'error' && reqs.length === 3, reqs.length + ' reqs total');
     console.warn = warn;
@@ -334,9 +334,9 @@ function fmt(v) {
     reloadModule('stars.js');
     const D2 = SAT.stars;
     await D2.load();
-    D2.deepField(100, 20, 1, 17, onReady);
+    D2.deepField(100, 20, 1, 13, onReady);
     await settle();
-    r = D2.deepField(100, 20, 1, 17, onReady);
+    r = D2.deepField(100, 20, 1, 13, onReady);
     ok('absent tile set reports error after the probe', r.state === 'error');
   }
 
