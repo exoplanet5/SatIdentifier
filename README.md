@@ -1,4 +1,9 @@
-# SatIdentifier
+# SatOccult
+
+**SatOccult** is an independently maintained derivative project based on
+[SatIdentifier](https://github.com/exoplanet5/SatIdentifier), originally created
+by Zhuoxiao. It is not an official release of, affiliated with, or endorsed by
+the upstream project.
 
 The inverse of a satellite tracker. Instead of asking *where is this satellite*, it
 asks **who is in my field of view** — so an unidentified trail on a frame can be
@@ -13,7 +18,7 @@ The site itself can be a **satellite** (space-based SSA): pick any object in the
 loaded catalogue by NORAD number and the scan runs from *its* sensor — who crosses
 my field, seen from orbit.
 
-![SatIdentifier — sky chart with predicted trails, all-sky context view, crossings table and satellite info](docs/screenshot.png)
+![SatOccult — sky chart with predicted trails, all-sky context view, crossings table and satellite info](docs/screenshot.png)
 
 Local Python backend (catalogue fetching, caching, persistence — standard library
 only) + browser frontend (SGP4 in Web Workers, canvas chart). Companion to
@@ -22,17 +27,23 @@ only) + browser frontend (SGP4 in Web Workers, canvas chart). Companion to
 Module APIs are in [CONTRACT.md](CONTRACT.md); how it was built and what was
 measured is in [DEVLOG.md](DEVLOG.md).
 
-## Upstream and modifications
+## Upstream, license, and modifications
 
-This repository is a modified distribution of
-[SatIdentifier](https://github.com/exoplanet5/SatIdentifier), originally created
-by Zhuoxiao. The upstream project is licensed under the MIT License; the
-original copyright and license notice are retained in [LICENSE](LICENSE).
+This repository is a fork and modified distribution of
+[SatIdentifier](https://github.com/exoplanet5/SatIdentifier). Original upstream
+code remains attributed to Zhuoxiao, and the upstream MIT copyright and license
+notice are retained in [LICENSE](LICENSE). The MIT license permits modification
+and redistribution as long as the copyright and license notices are preserved.
 
-This fork adds and changes satellite-occultation planning and event-search
+SatOccult adds and changes satellite-occultation planning and event-search
 features, together with related native-window and headless workflows, tests,
-and documentation. These changes are maintained separately from the upstream
-project. See [NOTICE.md](NOTICE.md) for the attribution and third-party notices.
+and documentation. These changes are maintained separately from upstream
+SatIdentifier and are not part of the upstream project's official release.
+See [NOTICE.md](NOTICE.md) for attribution and third-party notices.
+
+The repository and project are called **SatOccult**. Some application labels,
+source filenames, and release artifacts still use **SatIdentifier** for
+compatibility with the upstream codebase.
 
 ## Requirements
 

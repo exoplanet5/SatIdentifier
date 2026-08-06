@@ -3,10 +3,11 @@
 ## Upstream project
 
 This repository is based on [SatIdentifier](https://github.com/exoplanet5/SatIdentifier)
-by Zhuoxiao. The upstream project and the modifications in this repository are
-distributed under the MIT License; see [LICENSE](LICENSE). The upstream
-copyright and license notice must remain with copies or substantial portions of
-the software.
+by Zhuoxiao. SatOccult is an independently maintained fork and is not an
+official release of, affiliated with, or endorsed by the upstream project.
+The upstream copyright and license notice are preserved in [LICENSE](LICENSE).
+The MIT License applies to this distribution, including the modifications in
+this repository, except where a file or third-party notice states otherwise.
 
 The maintained changes in this repository include satellite-occultation
 planning and event-search features, native-window and headless execution paths,
