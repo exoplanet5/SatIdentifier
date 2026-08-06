@@ -806,9 +806,10 @@ with the right magnitude. It caught every one of the above. Keep it.
   tiles are fetched (local server, milliseconds) and `'loading'` returns with
   `stars:null`, the chart drawing the bundled catalogue until `onReady` fires.
   If the tile set has not been built (probe says absent, or a tile 404s) the
-  state parks in `'error'` and the chart stays on the bundled catalogue with a
-  footer note saying the deep catalogue is not built — quietly, no per-frame
-  retries (re-probe only on a fresh page load).
+  state parks in `'error'` and the chart stays on the bundled catalogue —
+  quietly, no per-frame retries (re-probe only on a fresh page load; since
+  round 19 removed the chart footer, the mA button tooltip is where the deep
+  behaviour is described to the user).
 - `SAT.stars.tilesForCone(ra0, dec0, radiusDeg) -> [name, ...]` (round 15, pure,
   unit-tested) — the tile names covering a cone under the scheme below, handling
   the RA wrap and the polar caps.
@@ -824,13 +825,21 @@ Each tile is the same STR1 structure-of-arrays binary as the bundled asset
 index, so a set built at another depth stays honest end to end), dec-sorted for
 the shared cone kernel. `index.json` records `{magLimit, count, tiles,
 builtIso, epochYr}` and is what the presence probe serves; it is written ONLY
-on completion, so a half-finished build reads as absent. Gaia DR3 via VizieR
-per tile (Gmag < cut + 0.5, G→V by Riello+ 2021, proper motions to the
-build-time decimal year), with the BSC5 bright-star merge applied per tile —
-Gaia genuinely lacks its saturated brightest stars (Vega, Sirius class), and a
-2° field containing Vega must still show Vega. A fetch that trips the size
-guard splits recursively in RA. The build is resumable: tiles whose file
-already exists are skipped.
+on completion, so a half-finished build reads as absent. Data source (round
+18): the **ESA Gaia Archive TAP** (`gea.esac.esa.int`) — one asynchronous ADQL
+job per 20° declination slab (five tile bands, boundary-aligned), Gmag < cut
++ 0.5, G→V by Riello+ 2021, proper motions to the build-time decimal year,
+tiles cut locally from each slab's CSV; the BSC5 bright-star merge is applied
+per tile — Gaia genuinely lacks its saturated brightest stars (Vega, Sirius
+class), and a 2° field containing Vega must still show Vega. Two guards, both
+born of real incidents: a slab at ≥ 2.5M rows is assumed silently
+row-cap-truncated (anonymous TAP truncates CSV with no overflow marker) and
+splits into sub-slabs; a slab under ~1 row/deg² is a broken service response
+(the round-16 VizieR husk lesson) and aborts the build resumably. Resumable at
+slab granularity: a slab whose tiles all exist costs nothing. (VizieR remains
+the source for the small bundled assets only — its interactive endpoint dies
+on its ~2-minute execution cap under bulk load, which is how round 16's build
+stalled.)
 
 `tools/make_starcat.py` fetches Tycho-2 from VizieR, keeps `VT ≤ 9.0`, converts to
 Johnson V, sorts by declination and writes the file. Dev-time only; the generated
@@ -869,8 +878,7 @@ view and gets the largest default window.
       stars/10 MB, V≤13 ≈ 6M/60 MB, V≤15 ≈ 32M/320 MB, V≤17 ≈ 137M/1.4 GB —
       m17 proved too heavy and the user chose m13. While tiles load (local
       server, milliseconds) or when the tile set has not been built, the
-      bundled catalogue draws at its own `localLimit()` and the footer says
-      which of those it is; should a tile build be shallower or deeper than
+      bundled catalogue draws at its own `localLimit()`; should a tile build be shallower or deeper than
       this law asks, the dot law keys on the DELIVERED depth
       (`deepField().magLimit`), never the wanted one.
     - **D ≥ 3°: clamp(10.5 − 5·log10(D/3), 4.5, 10.5)** — 10.5 at 3°, 9 at 6°,
@@ -882,13 +890,12 @@ view and gets the largest default window.
     aspirational leftover from the m9 Tycho era that the bundled file could
     only serve at 10.5, is gone. A manual value pins `magLimit` and clears
     `magAuto`; a saved m11 from an older state falls back to auto on the next
-    press; the footer always states the effective limit).
+    press).
     **Deep tiles are gated to narrow fields (round 17):** `deepField` is
     consulted only when the view span D < 3° — the same boundary as the auto
     law — regardless of the pinned limit. A pinned m13 on a wide field draws
-    the bundled catalogue and the footer says `wide field — m10.5 local`; this
-    is what bounds tile I/O (a 40° view would otherwise churn dozens of tiles
-    through the 16-tile LRU every pan).
+    the bundled catalogue; this is what bounds tile I/O (a 40° view would
+    otherwise churn dozens of tiles through the 16-tile LRU every pan).
     **Star rendering (round 15 — Stellarium-derived, binding).** The mapping
     from magnitude to dot follows Stellarium's `StelSkyDrawer::computeRCMag`
     design, adapted to a fixed-tone canvas (pure helper
@@ -927,8 +934,14 @@ view and gets the largest default window.
   - **Sun and Moon** (`settings.chart.sunMoon`, default on): SatObserver-style icons
     — rayed sun disc, moon with its phase terminator, bright limb facing the sun's
     chart direction (via a waypoint 1° along the moon→sun great circle, since the
-    sun itself may be over the tangent-plane horizon) — plus the
-    "moon %.0f° away" footer note while the layer is on.
+    sun itself may be over the tangent-plane horizon). (The "moon N° away"
+    footer note was removed with the footer in round 19.)
+  - **HUD (round 19 — one line only).** `RA … Dec … · W° × H° (ONE decimal) ·
+    rot N° [· mirrored] [Az/El when altaz] · sidereal on|off`. The zoom factor
+    is not shown, and the former third line — site name, crossing count,
+    selected-object rate, stale-scan warning, moon separation, star-depth
+    state — is REMOVED at user request: the stale warning and per-object rates
+    live in the Crossings window, the depth behaviour in the mA tooltip.
   - the FOV outline: solid rectangle (or circle) in the accent colour, with the
     field's angular size labelled on the edges; the region outside is dimmed ~25%.
   - a grid of RA/Dec lines with labels when `settings.chart.grid` (spacing chosen
@@ -1026,7 +1039,11 @@ no section headers taking their own line, no wrapped rows.
 ### SAT.allsky.init(bodyEl, win) — (js/allsky.js)
 
 Port of SatObserver's `skychart.js`, reduced to a **context view**: polar alt/az
-all-sky chart of the active site. **All-Sky star background (round 12 — SatObserver
+all-sky chart of the active site. **HUD (round 19 — one line only):** the FOV
+line (`FOV AZ … EL … · W° × H° (ONE decimal) · RA … Dec … · sun N°`); the former
+footer — site name, sky/map-view label, crossing counts, track-cap notes — is
+REMOVED at user request (the crossing bookkeeping lives in the Crossings
+window). **All-Sky star background (round 12 — SatObserver
 fallback, binding):** the star field is the bright catalogue `SAT.stardata` ONLY
 (BSC5/HYG, V ≤ 4.6), drawn whole-hemisphere with SatObserver's radius/alpha law
 (`rad = max(0.6, 2.7 − 0.45·mag)`, `alpha = max(0.25, 0.95 − 0.13·mag)`) —

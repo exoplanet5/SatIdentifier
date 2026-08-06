@@ -860,6 +860,55 @@ a service-health check must use the workload's own shape.
   without the gate a 40° pan would have churned dozens of tiles through the
   16-tile LRU. test_chart [12] pins both sides of the gate.
 
+### Round 18 (2026-08-06) — the tile builder moves to the ESA Gaia Archive
+
+VizieR never recovered within the day (its interactive endpoint is simply the
+wrong tool for a bulk job — see round 16), so on the user's decision the tile
+builder now sources from the **ESA Gaia Archive TAP** (`gea.esac.esa.int`),
+the authoritative bulk service: one asynchronous ADQL job per 20° declination
+slab (five tile bands, boundary-aligned), served from a server-side magnitude
+index with no execution cap, one CSV download per slab, tiles cut locally.
+Nine slabs replace ~520 interactive queries; a slab whose tiles all exist is
+skipped, so the build stays resumable and the salvaged southern tiles cost
+nothing.
+
+Guards carried forward and new ones, each from a real incident:
+- **Silent row-cap truncation**: anonymous TAP truncates CSV output at its row
+  cap with NO overflow marker in this format — a slab at ≥ 2.5M rows is
+  assumed cut and splits into sub-slabs (band-aligned).
+- **Sparse response** (< 1 row/deg², the round-16 VizieR husk lesson): abort
+  resumably, never write a husk tile.
+- **Poll errors are not job errors**: ESA's front end drops TLS connections in
+  bursts (measured: four straight `SSL: UNEXPECTED_EOF` failures in 40 s while
+  the job ran happily server-side — it killed the first two launches; the
+  user's local proxy on 127.0.0.1 is the likely chokepoint). The phase poll
+  now tolerates minutes of solid failure before giving a job up, and the
+  result download retries independently.
+- **The UWS create redirect is not guaranteed**: ESA occasionally answers the
+  submit with 200 at the base URL instead of the 303 to the job record —
+  every poll of `<base>/phase` then 404s (it cost slab 9 of the first full
+  run). The submit now falls back to extracting `<uws:jobId>` from the
+  response body.
+
+No frontend or backend changes: the tile format, scheme, endpoints and chart
+behaviour are exactly round 17's; only the acquisition method changed.
+
+### Round 19 (2026-08-06) — HUD slimming, both sky views
+
+At user request, while the round-18 tile build ran:
+
+- **Sky chart**: the third text line (site name, crossing count,
+  selected-object rate, ⚠ stale-scan warning, moon separation, star-depth
+  state) is gone — the warning and the rates live in the Crossings window,
+  the depth behaviour in the mA button tooltip. FOV prints with ONE decimal
+  (`1.5° × 1.0°`), the zoom factor (`1.00×`) is dropped, and the tracking
+  mode reads `sidereal on` / `sidereal off` instead of
+  "sidereal: satellites streak" / "parked: stars trail".
+- **All-Sky**: FOV to one decimal too, and its footer line (site,
+  `sky view (E left)`, `N of M crossing objects above the horizon`,
+  `tracks capped at 500` / `tracks off`) is removed — with the deliberate
+  loss of the track-cap truncation note, accepted as part of the request.
+
 ## 13. Running the checks
 
 ```sh

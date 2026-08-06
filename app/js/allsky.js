@@ -40,7 +40,7 @@
   var cssW = 0, cssH = 0, dpr = 1;
   var dirty = false, rafQueued = false;
   var warned = false;
-  var elHud = null, elFoot = null;
+  var elHud = null;
   var markerHits = [];                        // [{id, x, y}]
   var toolBtns = {};
   var D2R = Math.PI / 180, R2D = 180 / Math.PI;
@@ -630,7 +630,6 @@
       ctx.textAlign = 'center';
       ctx.fillText('Set an active site in the Sites window', m.cx, m.cy);
       elHud.style.display = 'none';
-      elFoot.textContent = '';
       return;
     }
     // The All-Sky view IS a ground-horizon projection (az rings, N/E/S/W, zenith
@@ -644,7 +643,6 @@
         m.cx, m.cy - 8);
       ctx.fillText('Use the Sky Chart, which works for both site kinds.', m.cx, m.cy + 10);
       elHud.style.display = 'none';
-      elFoot.textContent = loc.name + ' · NORAD ' + loc.norad;
       return;
     }
 
@@ -659,13 +657,13 @@
     } catch (e) { /* star layers are optional */ }
     try { drawSunMoon(m, loc, date); } catch (e) { /* ditto */ }
     var fov = drawFov(m, loc, date);
-    var cs = drawCrossings(m, loc, date);
+    drawCrossings(m, loc, date);
 
     // ---- HUD ----
     var o = SAT.state.obs;
     var size = o.fovShape === 'circ'
-      ? 'r ' + SAT.util.fmtAngle(o.fovRDeg)
-      : SAT.util.fmtAngle(o.fovWDeg) + ' × ' + SAT.util.fmtAngle(o.fovHDeg);
+      ? 'r ' + SAT.util.fmtAngle(o.fovRDeg, 1)
+      : SAT.util.fmtAngle(o.fovWDeg, 1) + ' × ' + SAT.util.fmtAngle(o.fovHDeg, 1);
     var txt;
     if (fov) {
       txt = 'FOV  AZ ' + fov.centre.azDeg.toFixed(1) + '°  EL ' + fov.centre.elDeg.toFixed(1) +
@@ -684,17 +682,9 @@
     } catch (e) { /* leave the sun off */ }
     elHud.textContent = txt;
     elHud.style.display = 'block';
-
-    var foot = loc.name + '  ·  ' + (cfg().eastLeft ? 'sky view (E left)' : 'map view (E right)');
-    if (cs.total) {
-      foot += '  ·  ' + cs.up + ' of ' + cs.total + ' crossing objects above the horizon';
-      // A silently truncated view looks like a scan that found less than it did.
-      if (cfg().tracks && cs.total > TRACK_CAP) foot += '  ·  tracks capped at ' + TRACK_CAP;
-      else if (!cfg().tracks) foot += '  ·  tracks off';
-    } else {
-      foot += '  ·  no crossings — scan in the Crossings window';
-    }
-    elFoot.textContent = foot;
+    // Round 19: the footer line (site, sky/map view, crossing counts, track-cap
+    // notes) was removed at user request — the crossing bookkeeping lives in
+    // the Crossings window. drawCrossings still runs for its side effects.
   }
 
   function requestRender() {
@@ -744,7 +734,6 @@
       '.ask-topstack{position:absolute;top:34px;left:6px;right:6px;display:flex;' +
         'flex-direction:column;gap:4px;align-items:flex-start;pointer-events:none;z-index:5;}' +
       '.ask-topstack .ask-hud{position:static;white-space:normal;line-height:1.5;}' +
-      '.ask-foot{color:#9aa4ad;}' +
       '.ask-toolbar{position:absolute;top:6px;left:6px;display:flex;gap:3px;z-index:6;opacity:.85;}' +
       '.ask-toolbar:hover{opacity:1;}' +
       '.ask-tbtn{min-width:26px;padding:2px 6px;}' +
@@ -764,8 +753,7 @@
     ctx = canvas.getContext('2d');
 
     elHud = SAT.util.el('div', { class: 'ask-hud' }, '');
-    elFoot = SAT.util.el('div', { class: 'ask-hud ask-foot' }, '');
-    body.appendChild(SAT.util.el('div', { class: 'ask-topstack' }, [elHud, elFoot]));
+    body.appendChild(SAT.util.el('div', { class: 'ask-topstack' }, [elHud]));
 
     function tbtn(key, label, title, onclick) {
       var b = SAT.util.el('button', { class: 'btn small ask-tbtn', title: title, onclick: onclick }, label);

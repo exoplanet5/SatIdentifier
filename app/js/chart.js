@@ -29,7 +29,7 @@
   var dirty = false, rafQueued = false, warned = false;
   var view = { zoom: 1, panX: 0, panY: 0 };   // zoom is relative to the fit scale
   var markerHits = [];                        // [{id, x, y}]
-  var elHud = null, elCursor = null, elFoot = null;
+  var elHud = null, elCursor = null;
   var toolBtns = {};
   var drag = null;
 
@@ -1204,7 +1204,6 @@
       centreMessage('Alt/Az pointing needs a site — set an active ground station in Locations');
       elHud.textContent = '—';
       elCursor.textContent = '';
-      elFoot.textContent = 'no active location';
       return;
     }
     var ra0 = tp.raDeg, dec0 = tp.decDeg;
@@ -1214,82 +1213,28 @@
     drawMW(ra0, dec0, t);
     if (cfg().grid) drawGrid(ra0, dec0, t);
     drawStars(ra0, dec0, t);
-    var moon = drawSunMoon(ra0, dec0, t, date);
+    drawSunMoon(ra0, dec0, t, date);
     drawFov(t);
-    var nCross = drawCrossings(list, nowMs);
+    drawCrossings(list, nowMs);
     drawScaleBar(t);
     drawCompass(t);
 
-    // HUD: pointing, then field geometry, then what the scan found
+    // HUD (round 19: this is the ONLY text line — the old footer with site,
+    // crossing count, selected rate, stale warning, moon separation and the
+    // star-depth state was removed at user request; the stale warning and the
+    // rates live in the Crossings window, the depth state in the mA tooltip).
     var fovTxt = o.fovShape === 'circ'
-      ? 'r ' + SAT.util.fmtAngle(o.fovRDeg, 2)
-      : SAT.util.fmtAngle(o.fovWDeg, 2) + ' × ' + SAT.util.fmtAngle(o.fovHDeg, 2);
+      ? 'r ' + SAT.util.fmtAngle(o.fovRDeg, 1)
+      : SAT.util.fmtAngle(o.fovWDeg, 1) + ' × ' + SAT.util.fmtAngle(o.fovHDeg, 1);
     var mount = o.track === 'mount';
     var hud = 'RA ' + SAT.util.fmtRA(ra0) + '  Dec ' + SAT.util.fmtDec(dec0) +
       ' · ' + fovTxt + ' · rot ' + o.rotDeg.toFixed(0) + '°' +
-      (o.flipEW ? ' · mirrored' : '') +
-      ' · ' + (view.zoom).toFixed(2) + '×';
+      (o.flipEW ? ' · mirrored' : '');
     if (o.mode === 'altaz') {
       hud += '  [Az ' + o.azDeg.toFixed(2) + '° El ' + o.elDeg.toFixed(2) + '°]';
     }
-    // Name the tracking mode outright. Which of the two rates streaks a real frame
-    // follows from it, and a reader comparing this chart against one has to know
-    // which picture they are being shown.
-    hud += mount
-      ? ' · parked: stars trail'
-      : ' · sidereal: satellites streak';
+    hud += mount ? ' · sidereal off' : ' · sidereal on';
     elHud.textContent = hud;
-
-    var foot = [];
-    foot.push(loc ? loc.name : 'no active location');
-    foot.push(nCross + ' crossing' + (nCross === 1 ? '' : 's'));
-
-    // The selected object's rate, taken from the pair that matches obs.track — the
-    // sidereal pair against the stars, the mount pair against the horizon. Quoting
-    // the wrong one is a 15"/s error on a GEO object, not a rounding difference.
-    var selId = SAT.state.selection ? SAT.state.selection.satId : null;
-    if (selId) {
-      for (var k = 0; k < list.length; k++) {
-        if (list[k].satId !== selId) continue;
-        var cr = list[k];
-        var rate = mount ? cr.rateMountAsPerS : cr.rateAsPerS;
-        var pa = mount ? cr.paMountDeg : cr.paDeg;
-        if (rate != null && isFinite(rate)) {
-          foot.push(cr.name + ' ' + rate.toFixed(1) + '″/s' +
-            (pa != null && isFinite(pa) ? ' PA ' + pa.toFixed(0) + '°' : ''));
-        }
-        break;
-      }
-    }
-    if (SAT.state.scan && SAT.state.scan.stale) foot.push('⚠ parameters changed — rescan');
-    if (moon) {
-      foot.push('moon ' + SAT.frames.sep(ra0, dec0, moon.raDeg, moon.decDeg).toFixed(0) + '° away');
-    }
-    if (SAT.stars && typeof SAT.stars.isDeep === 'function' && !SAT.stars.isDeep()) {
-      foot.push('bright stars only');
-    } else if (!SAT.stars) {
-      foot.push('no star catalogue');
-    }
-    // Star depth (round 15): always say what limit is actually drawn — in auto
-    // mode it changes with zoom, and while deep tiles load (or when the tile
-    // set is not built) the drawn depth is NOT the wanted one, which is
-    // exactly when it must be said.
-    if (cfg().stars && starCache.ok && starCache.effMag != null) {
-      var mtxt = 'm' + starCache.effMag.toFixed(1) + (cfg().magAuto ? ' auto' : '');
-      if (starCache.deepState === 'ready') {
-        mtxt += ' · deep tiles' + (starCache.deepTrunc ? ' (brightest 20k)' : '');
-      } else if (starCache.deepState === 'loading') {
-        mtxt += ' · loading deep tiles…';
-      } else if (starCache.deepState === 'error') {
-        mtxt += ' · deep tiles not built — m' +
-          (starCache.drawnMag != null ? starCache.drawnMag.toFixed(1) : '?') + ' local';
-      } else if (starCache.deepState === 'wide') {
-        mtxt += ' · wide field — m' +
-          (starCache.drawnMag != null ? starCache.drawnMag.toFixed(1) : '?') + ' local';
-      }
-      foot.push(mtxt);
-    }
-    elFoot.textContent = foot.join(' · ');
   }
 
   function requestRender() {
@@ -1481,7 +1426,6 @@
       '.chart-topstack{position:absolute;top:34px;left:6px;right:6px;display:flex;' +
         'flex-direction:column;gap:4px;align-items:flex-start;pointer-events:none;z-index:5;}' +
       '.chart-topstack .chart-hud{position:static;white-space:normal;line-height:1.5;}' +
-      '.chart-foot{color:#9aa4ad;}' +
       '.chart-toolbar{position:absolute;top:6px;left:6px;display:flex;gap:3px;z-index:6;opacity:.85;}' +
       '.chart-toolbar:hover{opacity:1;}' +
       '.chart-tbtn{min-width:26px;padding:2px 6px;}' +
@@ -1574,9 +1518,8 @@
 
     elHud = SAT.util.el('div', { class: 'chart-hud' }, '');
     elCursor = SAT.util.el('div', { class: 'chart-hud' }, '—');
-    elFoot = SAT.util.el('div', { class: 'chart-hud chart-foot' }, '');
     body.appendChild(SAT.util.el('div', { class: 'chart-topstack' },
-      [elHud, elCursor, elFoot]));
+      [elHud, elCursor]));
 
     buildToolbar();
     wireInput();

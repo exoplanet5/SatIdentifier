@@ -27,9 +27,11 @@ Both are negligible against the arcminute-scale TLE error this tool lives with.
 
 import argparse
 import bisect
+import gzip
 import json
 import math
 import pathlib
+import re
 import struct
 import sys
 import time
@@ -286,7 +288,6 @@ def parse_gaia_rows(text, v_limit):
 DEEP_MAG_LIMIT = 13.0
 DEEP_BAND_DEG = 4
 DEEP_COL_DEG = 30
-DEEP_FETCH_PAUSE = 0.3          # courtesy pause between the ~520 VizieR requests
 
 
 def deep_tiles():
@@ -302,68 +303,217 @@ def deep_tiles():
                    col * DEEP_COL_DEG, (col + 1) * DEEP_COL_DEG, de0, de1)
 
 
-# Load distribution and throttle escape: the CDS host first, then the CfA
-# mirror. Round 16 measured CDS throttling a long build session down to ~2 kB
-# responses after ~600 MB pulled in a day — WITHOUT an error status, so the
-# sparse-tile validation in build_deep_tiles() is what actually catches it.
-VIZIER_HOSTS = [
-    VIZIER_URL,
-    "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv",
-]
-
-
 def tile_area_deg2(ra0, ra1, de0, de1):
     """Solid angle of an RA/Dec box in square degrees."""
     return (ra1 - ra0) * math.degrees(
         math.sin(math.radians(de1)) - math.sin(math.radians(de0)))
 
 
-def fetch_gaia_box(ra0, ra1, de0, de1, g_limit, depth=0, base=None):
-    """Gaia DR3 rows in an RA/Dec box as TSV text, splitting in RA when the
-    response trips the size guard (the Baade-window class of tile).
+# ---------------------------------------------------------------------------
+# ESA Gaia Archive TAP (round 18) — the bulk source for the deep tile set.
+#
+# VizieR's interactive endpoint proved the wrong tool for a 500-query bulk job:
+# under daytime load every box scan died on its ~2-minute execution cap and
+# returned a truncated HTTP-200 husk (round 16). The ESA archive is the
+# authoritative bulk service — one ASYNCHRONOUS ADQL job per declination slab,
+# answered from a server-side magnitude index with no execution cap, one CSV
+# download per slab. Whole-sky G < 13.5 is ~9-10M rows over nine 20-deg slabs.
+# ---------------------------------------------------------------------------
 
-    One transient-network retry per request; a second failure raises so the
-    resumable outer loop can be re-run.
-    """
-    query = {
-        "-source": GAIA_SOURCE,
-        "-out": "RA_ICRS,DE_ICRS,pmRA,pmDE,Gmag,BP-RP",
-        "RA_ICRS": "%.4f..%.4f" % (ra0, ra1),
-        "DE_ICRS": "%.4f..%.4f" % (de0, de1),
-        "Gmag": "<%.2f" % g_limit,
-        "-out.max": "unlimited",
-    }
-    url = (base or VIZIER_URL) + "?" + urllib.parse.urlencode(query)
+ESA_TAP_ASYNC = "https://gea.esac.esa.int/tap-server/tap/async"
+TAP_POLL_S = 5
+TAP_JOB_TIMEOUT_S = 2400
+TAP_MAX_BYTES = 1 << 30         # per-slab download guard
+# Anonymous TAP row caps TRUNCATE the CSV silently — no overflow marker in this
+# format — so any slab this large is assumed cut and is split into sub-slabs.
+TAP_SPLIT_ROWS = 2500000
+
+
+def tap_query(de0, de1, g_limit):
+    return ("SELECT ra, dec, pmra, pmdec, phot_g_mean_mag, bp_rp "
+            "FROM gaiadr3.gaia_source "
+            "WHERE phot_g_mean_mag < %.2f AND dec >= %.1f AND dec %s %.1f"
+            % (g_limit, de0, "<=" if de1 >= 90 else "<", de1))
+
+
+def tap_get(url, timeout, tries=4, what="request", headers=None):
+    """GET with retries: a two-minute TAP poll loop WILL occasionally see a
+    dropped TLS connection (measured: SSL UNEXPECTED_EOF mid-build, round 18),
+    and one transient failure must not abandon a job the server is happily
+    running. Returns the open response; the caller uses it as a context."""
+    for attempt in range(1, tries + 1):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+            return urllib.request.urlopen(req, timeout=timeout)
+        except (urllib.error.URLError, OSError) as e:
+            if attempt == tries:
+                raise
+            print("    transient %s error (%s) — retry %d/%d"
+                  % (what, e, attempt, tries - 1), flush=True)
+            time.sleep(10)
+
+
+def tap_run(query):
+    """Submit an async TAP job (PHASE=RUN at creation), poll to completion,
+    return the CSV text. UWS flow: the create POST 303-redirects to the job
+    record; urllib turns that into a GET, so resp.url IS the job URL."""
+    data = urllib.parse.urlencode({
+        "REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv",
+        "PHASE": "RUN", "QUERY": query,
+    }).encode("ascii")
+    job_url = None
     for attempt in (1, 2):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            t0 = time.time()
+            req = urllib.request.Request(ESA_TAP_ASYNC, data=data,
+                                         headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
-                raw = resp.read(MAX_BYTES + 1)
-            if len(raw) > MAX_BYTES:
-                raise OverflowError()
-            print("    %7.1f kB in %5.1f s  RA %.1f..%.1f" %
-                  (len(raw) / 1e3, time.time() - t0, ra0, ra1), flush=True)
-            return raw.decode("utf-8", "replace")
-        except OverflowError:
-            if depth >= 4:
-                raise RuntimeError("box still over %d MB after 4 RA splits" %
-                                   (MAX_BYTES >> 20))
-            mid = 0.5 * (ra0 + ra1)
-            print("    over size guard — splitting RA at %.2f" % mid, flush=True)
-            return (fetch_gaia_box(ra0, mid, de0, de1, g_limit, depth + 1, base) +
-                    fetch_gaia_box(mid, ra1, de0, de1, g_limit, depth + 1, base))
+                job_url = resp.url
+                body = resp.read(1 << 20)
+            # The UWS create is SUPPOSED to 303-redirect to the job record, but
+            # ESA occasionally answers 200 at the base URL (measured: it cost
+            # slab 9 of the first full run — every poll of <base>/phase 404'd).
+            # The job record body carries the id either way.
+            if job_url.rstrip("/").endswith("/async"):
+                mjob = re.search(rb"<uws:jobId>([^<]+)</uws:jobId>", body)
+                if not mjob:
+                    raise RuntimeError("TAP submit: no redirect and no jobId "
+                                       "in the response body")
+                job_url = ESA_TAP_ASYNC + "/" + mjob.group(1).decode("ascii")
+            break
         except (urllib.error.URLError, OSError) as e:
             if attempt == 2:
                 raise
-            print("    retrying after %s" % e, flush=True)
-            time.sleep(5)
+            # a resubmit at worst orphans a job, which expires server-side
+            print("    transient submit error (%s) — retrying" % e, flush=True)
+            time.sleep(10)
+    print("    job %s" % job_url.rsplit("/", 1)[-1], flush=True)
+    t0 = time.time()
+    fails = 0
+    while True:
+        # A poll error is NOT a job error: the server keeps running the query
+        # whether or not we can ask about it. Measured (round 18): ESA's front
+        # end drops TLS connections in bursts — four straight failures in 40 s
+        # with the job perfectly healthy — so polling tolerates minutes of
+        # solid failure before giving the job up.
+        try:
+            with tap_get(job_url + "/phase", FETCH_TIMEOUT, tries=1) as resp:
+                phase = resp.read(64).decode("ascii", "replace").strip()
+            fails = 0
+        except (urllib.error.URLError, OSError) as e:
+            fails += 1
+            if fails >= 12:
+                raise RuntimeError("phase polling failed %d times in a row "
+                                   "(%s): %s" % (fails, e, job_url))
+            print("    poll error (%s) — %d/12, still waiting" % (e, fails),
+                  flush=True)
+            time.sleep(15)
+            continue
+        if phase == "COMPLETED":
+            break
+        if phase in ("ERROR", "ABORTED"):
+            raise RuntimeError("TAP job failed (%s): %s" % (phase, job_url))
+        if time.time() - t0 > TAP_JOB_TIMEOUT_S:
+            raise RuntimeError("TAP job still %s after %d s: %s"
+                               % (phase, TAP_JOB_TIMEOUT_S, job_url))
+        time.sleep(TAP_POLL_S)
+    t1 = time.time()
+    with tap_get(job_url + "/results/result", 600, what="download",
+                 headers={"Accept-Encoding": "gzip"}) as resp:
+        chunks, total = [], 0
+        while True:
+            c = resp.read(1 << 20)
+            if not c:
+                break
+            total += len(c)
+            if total > TAP_MAX_BYTES:
+                raise RuntimeError("TAP result exceeds %d MB" % (TAP_MAX_BYTES >> 20))
+            chunks.append(c)
+        enc = resp.headers.get("Content-Encoding", "")
+    raw = b"".join(chunks)
+    if enc == "gzip" or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    print("    %.1f MB in %.0f s download (queue+run %.0f s)"
+          % (len(raw) / 1e6, time.time() - t1, t1 - t0), flush=True)
+    return raw.decode("utf-8", "replace")
+
+
+def parse_tap_csv(text, v_limit, epoch_yr):
+    """ESA CSV -> ([(raDeg, decDeg, vMag), ...] at epoch_yr, n_rows_parsed).
+
+    Column order comes from the header line; null cells are empty strings.
+    Same PM and G->V conventions as the VizieR parser: pmra is mu_alpha*cosDE,
+    blank proper motions move nothing, missing colour leaves V = G.
+    """
+    dt = epoch_yr - GAIA_EPOCH
+    lines = text.splitlines()
+    if not lines:
+        return [], 0
+    cols = {name.strip().lower(): i for i, name in enumerate(lines[0].split(","))}
+    try:
+        i_ra, i_de = cols["ra"], cols["dec"]
+        i_pr, i_pd = cols["pmra"], cols["pmdec"]
+        i_g, i_c = cols["phot_g_mean_mag"], cols["bp_rp"]
+    except KeyError as e:
+        raise RuntimeError("TAP CSV header missing column %s" % e)
+    stars = []
+    n_rows = 0
+    for line in lines[1:]:
+        if not line:
+            continue
+        p = line.split(",")
+        try:
+            ra, dec, g = float(p[i_ra]), float(p[i_de]), float(p[i_g])
+        except (ValueError, IndexError):
+            continue
+        n_rows += 1
+
+        def opt(idx):
+            try:
+                return float(p[idx])
+            except (ValueError, IndexError):
+                return None
+        pm_ra, pm_de, bprp = opt(i_pr), opt(i_pd), opt(i_c)
+        if pm_ra is not None and pm_de is not None:
+            cosd = math.cos(math.radians(dec))
+            if abs(cosd) > 1e-6:
+                ra += pm_ra * dt / 3.6e6 / cosd
+            dec += pm_de * dt / 3.6e6
+        v = gaia_g_to_v(g, bprp)
+        if v <= v_limit:
+            stars.append((ra % 360.0, dec, v))
+    return stars, n_rows
+
+
+def fetch_tap_bands(band_lo, band_hi, vmax, epoch_yr):
+    """Stars for tile bands [band_lo, band_hi) via one TAP job, splitting on
+    suspicion of a silent row-cap truncation, plus the round-16 astronomical
+    sparse guard (< 1 row/deg^2 is a broken service, not sky)."""
+    de0, de1 = -90 + 4 * band_lo, -90 + 4 * band_hi
+    stars, n_rows = parse_tap_csv(tap_run(tap_query(de0, de1, vmax + 0.5)),
+                                  vmax, epoch_yr)
+    if n_rows >= TAP_SPLIT_ROWS and band_hi - band_lo > 1:
+        mid = (band_lo + band_hi) // 2
+        print("    %d rows — near a row cap, splitting the slab" % n_rows, flush=True)
+        return (fetch_tap_bands(band_lo, mid, vmax, epoch_yr)
+                + fetch_tap_bands(mid, band_hi, vmax, epoch_yr))
+    area = tile_area_deg2(0, 360, de0, de1)
+    if n_rows < area:
+        raise RuntimeError("TAP slab dec %g..%g: %d rows for %.0f deg^2 — "
+                           "broken response; rerun, the build resumes" %
+                           (de0, de1, n_rows, area))
+    return stars
 
 
 def build_deep_tiles(out_dir, bright_path, vmax):
-    """Build the deep tile set. Resumable: existing tiles are skipped, and the
-    index (the frontend's presence signal) is written only when every tile is
-    done, so a half-finished build never reads as present."""
+    """Build the deep tile set from the ESA Gaia Archive (round 18).
+
+    One async TAP job per 20-deg declination slab (five tile bands, aligned),
+    the slab's tiles cut locally. Resumable at slab granularity: a slab whose
+    tiles all exist costs nothing. The index — the frontend's presence signal
+    — is written only when every tile exists, so a half-finished build never
+    reads as present.
+    """
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     epoch_yr = 2000.0 + (time.time() - 946728000.0) / 31557600.0
@@ -373,54 +523,43 @@ def build_deep_tiles(out_dir, bright_path, vmax):
     # the bundled catalogue on screen, so every bright star must be present in
     # the tile that contains it.
     bright = load_bright(bright_path) if pathlib.Path(bright_path).exists() else []
+    all_tiles = list(deep_tiles())
 
-    global TARGET_EPOCH
-    TARGET_EPOCH = epoch_yr          # parse_gaia_rows propagates PM to this
-    total = 0
-    names = []
-    todo = list(deep_tiles())
-    for i, (name, ra0, ra1, de0, de1) in enumerate(todo):
-        names.append(name)
-        tile_path = out / name
-        if tile_path.exists():
-            total += (tile_path.stat().st_size - 12) // 10
+    for slab in range(9):
+        b_lo, b_hi = slab * 5, slab * 5 + 5
+        slab_tiles = [t for t in all_tiles
+                      if b_lo <= int(t[0][1:].split("_")[0]) < b_hi]
+        missing = [t for t in slab_tiles if not (out / t[0]).exists()]
+        if not missing:
             continue
-        print("[%3d/%d] %s  RA %g..%g Dec %g..%g" %
-              (i + 1, len(todo), name, ra0, ra1, de0, de1), flush=True)
-        # A throttled VizieR answers HTTP 200 with a near-empty body — no error
-        # status at all — so the only reliable check is astronomical: even the
-        # galactic poles hold ~25 stars/deg^2 at V<=13, so a tile with under
-        # ~1 row/deg^2 is a broken response, not sky. Try each host once;
-        # abort (resumably) rather than write a corrupt tile.
-        floor_rows = max(20, tile_area_deg2(ra0, ra1, de0, de1))
-        stars = None
-        for base in VIZIER_HOSTS:
-            text = fetch_gaia_box(ra0, ra1, de0, de1, vmax + 0.5, base=base)
-            rows, skipped = parse_gaia_rows(text, vmax)
-            if len(rows) + skipped >= floor_rows:
-                stars = rows
-                break
-            print("    implausibly sparse (%d rows, floor %d) from %s — "
-                  "throttled?" % (len(rows) + skipped, floor_rows, base), flush=True)
-        if stars is None:
-            raise RuntimeError(
-                "every VizieR host returned a sparse/truncated response for %s "
-                "— likely throttled; rerun later, the build resumes" % name)
-        # clip the bright merge to the tile (with margin for the match radius)
+        print("[slab %d/9] dec %g..%g — %d of %d tiles to build"
+              % (slab + 1, -90 + 20 * slab, -70 + 20 * slab,
+                 len(missing), len(slab_tiles)), flush=True)
+        stars = fetch_tap_bands(b_lo, b_hi, vmax, epoch_yr)
+        stars.sort(key=lambda s: s[1])
+        decs = [s[1] for s in stars]
         m = MATCH_ARCSEC / 3600.0 * 2
-        sub = [s for s in bright
-               if de0 - m <= s[1] <= de1 + m
-               and (ra1 - ra0 >= 360 or (ra0 - m <= s[0] <= ra1 + m))]
-        if sub:
-            stars, rephot, added = merge_bright(stars, sub)
-        n, nbytes = write_tile(stars, tile_path, vmax)
-        total += n
-        print("    %d stars (%d skipped), %.1f kB" % (n, skipped, nbytes / 1e3),
-              flush=True)
-        time.sleep(DEEP_FETCH_PAUSE)
+        for name, ra0, ra1, de0, de1 in missing:
+            lo = bisect.bisect_left(decs, de0)
+            hi = bisect.bisect_left(decs, de1)
+            rows = [s for s in stars[lo:hi]
+                    if ra1 - ra0 >= 360 or ra0 <= s[0] < ra1]
+            sub = [s for s in bright
+                   if de0 - m <= s[1] <= de1 + m
+                   and (ra1 - ra0 >= 360 or (ra0 - m <= s[0] <= ra1 + m))]
+            if sub:
+                rows, rephot, added = merge_bright(rows, sub)
+            n, nbytes = write_tile(rows, out / name, vmax)
+            print("    %s: %d stars, %.1f kB" % (name, n, nbytes / 1e3), flush=True)
 
+    total = 0
+    for name, *_ in all_tiles:
+        p = out / name
+        if not p.exists():
+            raise RuntimeError("tile %s missing after the build" % name)
+        total += (p.stat().st_size - 12) // 10
     index = {
-        "magLimit": vmax, "count": total, "tiles": len(names),
+        "magLimit": vmax, "count": total, "tiles": len(all_tiles),
         "builtIso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "epochYr": round(epoch_yr, 3),
     }
@@ -428,7 +567,7 @@ def build_deep_tiles(out_dir, bright_path, vmax):
     tmp.write_text(json.dumps(index), encoding="utf-8")
     tmp.replace(out / "index.json")
     print("deep tile set complete: %d stars in %d tiles, index written"
-          % (total, len(names)), flush=True)
+          % (total, len(all_tiles)), flush=True)
     return 0
 
 
