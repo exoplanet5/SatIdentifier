@@ -125,7 +125,9 @@ section [o]).
   database to **V = 13** serves views narrower than 3° (built once with
   `python3 tools/make_starcat.py --deep-tiles`, ~60 MB, never touches the
   network at runtime); wider views use the bundled catalogue (V ≤ 10.5,
-  549 037 stars), shedding depth as the field grows. Star dots follow
+  549 037 stars), shedding depth as the field grows. The deep build is
+  **optional**: out of the box, without it, every field draws from the bundled
+  catalogue and simply tops out at **V = 10.5**. Star dots follow
   Stellarium's rendering law, fading smoothly to invisibility at the limit.
   Milky Way, Sun/Moon (with lunar phase) and constellation overlays each have
   a toolbar toggle; the All-Sky panel uses the bright-star set (V ≤ 4.6). No
