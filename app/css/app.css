@@ -146,6 +146,49 @@ input[type="color"].swatch::-webkit-color-swatch { border: none; border-radius: 
 .msg-empty { padding: 18px 12px; color: var(--fg-dim); text-align: center; font-size: 12px; }
 .err { color: var(--danger); font-size: 12px; }
 
+/* ---------- occultation P0-11 windows ------------------------------------- */
+.occ-root { height: 100%; display: flex; flex-direction: column; font-size: 12px; }
+.occ-form { padding: 8px; flex: 0 0 auto; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.occ-site-line, .occ-actions, .occ-toolbar, .occ-chart-head {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+.occ-site-line { margin-bottom: 8px; }
+.occ-site { color: var(--fg); font-family: var(--mono); }
+.occ-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 6px 10px; }
+.occ-field { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--fg-dim); }
+.occ-label { white-space: nowrap; color: var(--fg-dim); }
+.occ-input { min-width: 0; flex: 1 1 auto; }
+.occ-check-field { justify-content: flex-start; }
+.occ-check-input { flex: 0 0 auto; margin: 0 2px 0 0; }
+.occ-unit { color: #68737e; white-space: nowrap; font-family: var(--mono); font-size: 10px; }
+.occ-actions { margin-top: 9px; }
+.occ-filter-block { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.occ-filter-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.occ-filter-title, .occ-filter-hint { color: var(--fg-dim); font-size: 11px; }
+.occ-filter-title { min-width: 88px; }
+.occ-filter-chip { display: inline-flex; align-items: center; gap: 3px; color: var(--fg); }
+.occ-filter-button { padding: 2px 6px; }
+.occ-sort-button { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 2px 3px; white-space: nowrap; }
+.occ-sort-button:hover { color: var(--accent); }
+.occ-filter-toolbar { gap: 5px; }
+.occ-filter-group { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.occ-progress { height: 7px; margin: 8px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.occ-progress-fill { height: 100%; width: 0; background: var(--accent); transition: width .12s linear; }
+.occ-status { padding: 0 8px; color: var(--fg); font-weight: 600; }
+.occ-status.ok, .occ-good { color: var(--ok); }
+.occ-status.warn { color: var(--warn); }
+.occ-status.err { color: var(--danger); }
+.occ-detail { padding: 2px 8px 6px; font-family: var(--mono); font-size: 11px; }
+.occ-note { flex: 0 0 auto; padding: 6px 8px; border-top: 1px solid var(--border); color: var(--fg-dim); font-size: 11px; }
+.occ-toolbar { padding: 6px 8px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.occ-summary { flex: 1 1 auto; color: var(--fg-dim); font-family: var(--mono); font-size: 11px; }
+.occ-table-wrap { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.occ-table th { position: sticky; top: 0; }
+.occ-table td { vertical-align: top; }
+.occ-table .occ-flags { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--fg-dim); }
+.occ-chart-head { flex: 0 0 auto; padding: 6px 8px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.occ-canvas { display: block; width: 100%; height: calc(100% - 39px); }
+
 /* scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }

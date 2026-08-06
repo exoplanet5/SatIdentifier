@@ -92,6 +92,9 @@ console.log('\n[0] module loads under a stub DOM and exposes the contracted API'
   ok('init / requestRender / fitView are functions',
     typeof C.init === 'function' && typeof C.requestRender === 'function' &&
     typeof C.fitView === 'function');
+  ok('occultation focus API is available',
+    typeof C.showOccultationEvent === 'function' &&
+    typeof C.clearOccultationEvent === 'function');
 }
 
 // ---------------------------------------------------------------- fixtures
@@ -318,7 +321,12 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
   const CROSSINGS = ['leo', 'meo', 'geo', 'heo'].map((c, i) => crossing('o_' + i, c, i));
 
   global.SAT.bus = { on: () => {}, off: () => {}, emit: () => {} };
-  global.SAT.clock = { getDate: () => new Date(T0) };
+  let focusedClockMs = null, focusedClockRunning = null;
+  global.SAT.clock = {
+    getDate: () => new Date(T0),
+    setDate: d => { focusedClockMs = d.getTime(); },
+    setRunning: v => { focusedClockRunning = !!v; },
+  };
   global.SAT.stars = {
     isDeep: () => true,
     cone: (ra, dec, r) => {
@@ -349,6 +357,18 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
     // round 2: the chart draws chartCrossings (the ticked-rows narrowing);
     // with nothing ticked it equals visibleCrossings
     chartCrossings: () => CROSSINGS,
+    occultation: {
+      passes: [{
+        passId: 'pass:test', startMs: T0 - 10000, endMs: T0 + 10000,
+        path: [
+          { t: T0 - 10000, raDeg: RA0 - 0.5, decDeg: DEC0 - 0.2 },
+          { t: T0 - 5000, raDeg: RA0 - 0.25, decDeg: DEC0 - 0.1 },
+          { t: T0, raDeg: RA0, decDeg: DEC0 },
+          { t: T0 + 5000, raDeg: RA0 + 0.25, decDeg: DEC0 + 0.1 },
+          { t: T0 + 10000, raDeg: RA0 + 0.5, decDeg: DEC0 + 0.2 },
+        ],
+      }],
+    },
     save: () => {},
     setObs: () => {},
     clickSelect: () => {},
@@ -364,6 +384,25 @@ console.log('\n[10] render smoke test — every layer, both tracking modes');
     calls.arc > 100 && calls.stroke > 50 && calls.fillText > 10,
     `arc ${calls.arc}, stroke ${calls.stroke}, fillText ${calls.fillText}, fill ${calls.fill}`);
   ok('HiDPI transform applied', calls.setTransform >= 1);
+
+  const OCC_EVENT = {
+    eventId: 'event:test', passId: 'pass:test', satId: 'o_test', name: 'TEST SAT',
+    tCaMs: T0, candidate: { raDeg: RA0, decDeg: DEC0, mag: 5.2 },
+    closestGeometry: { raDeg: RA0 + 0.00001, decDeg: DEC0 + 0.00001 },
+  };
+  const eventDraw0 = drawn();
+  C.showOccultationEvent(OCC_EVENT);
+  ok('event focus pauses and jumps to closest approach',
+    focusedClockMs === T0 && focusedClockRunning === false,
+    `time ${focusedClockMs}, running ${focusedClockRunning}`);
+  ok('event focus draws the target and satellite markers',
+    drawn() - eventDraw0 > 20, `${drawn() - eventDraw0} draw ops`);
+  C.clearOccultationEvent();
+  const shortTrack = C._occultationTrackWindow({ durationMs: 100 }, T0);
+  const longTrack = C._occultationTrackWindow({ durationMs: 2000 }, T0);
+  ok('event duration scales the adjacent passing-track window',
+    longTrack.beforeMs > shortTrack.beforeMs && longTrack.afterMs > shortTrack.afterMs,
+    `short ±${shortTrack.beforeMs / 1000}s, long ±${longTrack.beforeMs / 1000}s`);
 
   // Now the cases most likely to be broken, one at a time. Any throw inside render()
   // is swallowed by the rAF guard in production, so assert on the console instead.

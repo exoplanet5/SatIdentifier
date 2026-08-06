@@ -2,6 +2,7 @@
 data/
 
 # build
+.venv/
 .venv-build/
 build/
 dist/

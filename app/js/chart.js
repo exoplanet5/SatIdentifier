@@ -29,6 +29,10 @@
   var dirty = false, rafQueued = false, warned = false;
   var view = { zoom: 1, panX: 0, panY: 0 };   // zoom is relative to the fit scale
   var markerHits = [];                        // [{id, x, y}]
+  // A selected occultation is a display-only focus. It deliberately does not
+  // rewrite SAT.state.obs: inspecting a result should not make the ordinary
+  // Crossing scan stale or silently change the user's instrument pointing.
+  var occultationFocus = null;                // {event, star, timeMs, previousView}
   var elHud = null, elCursor = null, elFoot = null;
   var toolBtns = {};
   var drag = null;
@@ -170,6 +174,33 @@
 
   // ---- pointing ------------------------------------------------------------
 
+  function validRaDec(row) {
+    return !!row && isFinite(Number(row.raDeg)) && isFinite(Number(row.decDeg)) &&
+      Number(row.decDeg) >= -90 && Number(row.decDeg) <= 90;
+  }
+
+  function occultationStarOf(event) {
+    var candidate = event && event.candidate;
+    return validRaDec(candidate)
+      ? { raDeg: ((Number(candidate.raDeg) % 360) + 360) % 360,
+          decDeg: Number(candidate.decDeg) }
+      : null;
+  }
+
+  function occultationPassOf(event) {
+    var oc = SAT.state && SAT.state.occultation;
+    var passes = oc && Array.isArray(oc.passes) ? oc.passes : [];
+    if (!event || event.passId == null) return null;
+    return passes.find(function (pass) {
+      return String(pass.passId) === String(event.passId);
+    }) || null;
+  }
+
+  function occultationEventTimeOf(event) {
+    var value = Number(event && event.tCaMs);
+    return isFinite(value) ? value : null;
+  }
+
   /** The tangent point at `date`, J2000.
    *
    *  In alt/az mode this is recomputed from az/el every frame, so a parked mount's
@@ -178,6 +209,11 @@
    *  a fixed all-sky lens). Returns null when alt/az is asked for without a site,
    *  because there is then no answer to give. */
   function tangentPoint(date) {
+    // The event star is a fixed J2000 direction, so using it as the temporary
+    // tangent point keeps the selected event visible without changing Pointing.
+    if (occultationFocus && occultationFocus.star) {
+      return { raDeg: occultationFocus.star.raDeg, decDeg: occultationFocus.star.decDeg };
+    }
     var o = SAT.state.obs;
     if (o.mode === 'altaz') {
       var loc = SAT.state.activeLocation();
@@ -278,7 +314,11 @@
     var opts = { refract: true, dut1S: o.dut1S };
     var azEl;
     try {
-      azEl = o.mode === 'altaz'
+      // In event-focus mode the chart is intentionally centred on the selected
+      // star, even when the saved pointing representation is Alt/Az. Convert the
+      // focused tangent point back to the local frame so parked-mount drift stays
+      // geometrically consistent with the marker.
+      azEl = o.mode === 'altaz' && !occultationFocus
         ? { azDeg: o.azDeg, elDeg: o.elDeg }
         : SAT.prop.siteRaDecToAltAz(loc, base.raDeg, base.decDeg, now, opts);
       if (!azEl) throw new Error('unresolvable site');   // -> fixed frame below
@@ -339,6 +379,52 @@
   function fitView() {
     view.zoom = 1; view.panX = 0; view.panY = 0;
     requestRender();
+  }
+
+  function clearOccultationEvent() {
+    if (!occultationFocus) return;
+    if (occultationFocus.previousView) {
+      view.zoom = occultationFocus.previousView.zoom;
+      view.panX = occultationFocus.previousView.panX;
+      view.panY = occultationFocus.previousView.panY;
+    }
+    occultationFocus = null;
+    updateToolbar();
+    requestRender();
+  }
+
+  /** Focus the main chart on one event without changing the saved pointing.
+   *
+   * The simulation clock is paused at closest approach so the two markers are a
+   * stable snapshot. The user can press Run or use the Clock window afterwards to
+   * inspect motion around the event epoch.
+   */
+  function showOccultationEvent(event) {
+    if (!event || typeof event !== 'object') {
+      clearOccultationEvent();
+      return false;
+    }
+    var previousView = occultationFocus ? occultationFocus.previousView : {
+      zoom: view.zoom, panX: view.panX, panY: view.panY,
+    };
+    occultationFocus = {
+      event: event,
+      star: occultationStarOf(event),
+      timeMs: occultationEventTimeOf(event),
+      previousView: previousView,
+    };
+    // The tangent point is recentered on the target, but a previous manual pan
+    // would otherwise move that target back off the visible canvas.
+    view.panX = 0; view.panY = 0;
+    if (occultationFocus.timeMs != null && SAT.clock) {
+      if (typeof SAT.clock.setRunning === 'function') SAT.clock.setRunning(false);
+      if (typeof SAT.clock.setDate === 'function') {
+        SAT.clock.setDate(new Date(occultationFocus.timeMs));
+      }
+    }
+    updateToolbar();
+    requestRender();
+    return true;
   }
 
   // ---- star layer ----------------------------------------------------------
@@ -809,6 +895,163 @@
     return null;
   }
 
+  /** Return the satellite direction represented by an occultation event.
+   *
+   * The refined event's closestGeometry is authoritative at tCaMs. The path,
+   * closest-vector and live propagation fallbacks keep incomplete/older event
+   * records inspectable without inventing a direction when none is available.
+   */
+  function occultationSatelliteOf(event, tMs) {
+    var geometry = event && event.closestGeometry;
+    if (validRaDec(geometry)) {
+      return { raDeg: ((Number(geometry.raDeg) % 360) + 360) % 360,
+        decDeg: Number(geometry.decDeg), source: 'closest approach' };
+    }
+
+    if (event && event.closestVector && SAT.occultation && SAT.occultation.geometry &&
+        typeof SAT.occultation.geometry.raDecFromUnit === 'function') {
+      try {
+        var fromVector = SAT.occultation.geometry.raDecFromUnit(event.closestVector);
+        if (validRaDec(fromVector)) {
+          return { raDeg: ((Number(fromVector.raDeg) % 360) + 360) % 360,
+            decDeg: Number(fromVector.decDeg), source: 'closest vector' };
+        }
+      } catch (e) { /* fall through to path/live propagation */ }
+    }
+
+    var pass = occultationPassOf(event);
+    var pathPoint = pass && pathPosAt(pass.path, tMs);
+    if (validRaDec(pathPoint)) {
+      return { raDeg: ((Number(pathPoint.raDeg) % 360) + 360) % 360,
+        decDeg: Number(pathPoint.decDeg), source: 'pass path' };
+    }
+
+    var loc = SAT.state && SAT.state.activeLocation ? SAT.state.activeLocation() : null;
+    var obj = null;
+    if (SAT.state) {
+      if (SAT.state.getObj && event && event.satId != null) obj = SAT.state.getObj(event.satId);
+      if (!obj && SAT.state.objByNorad && event && event.norad != null) {
+        obj = SAT.state.objByNorad(event.norad);
+      }
+    }
+    if (loc && obj && SAT.prop && typeof SAT.prop.look === 'function' && isFinite(tMs)) {
+      try {
+        var look = SAT.prop.look(loc, obj, new Date(tMs), {
+          dut1S: SAT.state.obs && SAT.state.obs.dut1S,
+        });
+        if (validRaDec(look)) {
+          return { raDeg: ((Number(look.raDeg) % 360) + 360) % 360,
+            decDeg: Number(look.decDeg), source: 'live propagation' };
+        }
+      } catch (e) { /* an incomplete TLE should not break the chart */ }
+    }
+    return null;
+  }
+
+  // The contact duration is usually milliseconds for a metre-scale effective
+  // radius, which is too short to make a useful visual track by itself. Use it as
+  // the scaling signal while keeping a practical floor/ceiling for the adjacent
+  // passing segment. The pass bounds still win at the horizon/visibility edges.
+  var OCC_TRACK_MIN_HALF_MS = 5000;
+  var OCC_TRACK_MAX_HALF_MS = 60000;
+  var OCC_TRACK_DURATION_FACTOR = 20;
+
+  function occultationTrackWindowOf(event, eventMs) {
+    if (!event || !isFinite(eventMs)) return null;
+    var durationMs = Number(event.durationMs);
+    if (!(durationMs > 0)) durationMs = 1000;
+    var halfMs = Math.max(OCC_TRACK_MIN_HALF_MS,
+      Math.min(OCC_TRACK_MAX_HALF_MS, durationMs * OCC_TRACK_DURATION_FACTOR));
+    var startMs = eventMs - halfMs, endMs = eventMs + halfMs;
+    var pass = occultationPassOf(event);
+    var bounds = pass || event.passBounds || null;
+    var passStart = bounds ? Number(bounds.startMs) : NaN;
+    var passEnd = bounds ? Number(bounds.endMs) : NaN;
+    if (isFinite(passStart)) startMs = Math.max(startMs, passStart);
+    if (isFinite(passEnd)) endMs = Math.min(endMs, passEnd);
+    // A malformed/rounded pass boundary must not erase the event's local track.
+    if (!(endMs > startMs)) {
+      startMs = eventMs - halfMs;
+      endMs = eventMs + halfMs;
+    }
+    return {
+      startMs: startMs, endMs: endMs,
+      beforeMs: Math.max(0, eventMs - startMs),
+      afterMs: Math.max(0, endMs - eventMs),
+      durationMs: durationMs,
+    };
+  }
+
+  function pushOccultationTrackPoint(points, point) {
+    if (!point || !isFinite(Number(point.t)) || !validRaDec(point)) return;
+    points.push({
+      t: Number(point.t),
+      raDeg: ((Number(point.raDeg) % 360) + 360) % 360,
+      decDeg: Number(point.decDeg),
+    });
+  }
+
+  function occultationTrackPoints(event, eventMs, window) {
+    if (!event || !window) return [];
+    var points = [];
+    var pass = occultationPassOf(event);
+    var path = pass && Array.isArray(pass.path) ? pass.path : [];
+    if (path.length >= 2) {
+      pushOccultationTrackPoint(points, pathPosAt(path, window.startMs));
+      path.forEach(function (point) {
+        if (Number(point.t) >= window.startMs && Number(point.t) <= window.endMs) {
+          pushOccultationTrackPoint(points, point);
+        }
+      });
+      pushOccultationTrackPoint(points, pathPosAt(path, window.endMs));
+    }
+
+    // Keep the exact event direction in the track even when the retained pass
+    // path is downsampled and has no sample exactly at tCaMs.
+    var atEvent = occultationSatelliteOf(event, eventMs);
+    if (atEvent) pushOccultationTrackPoint(points, {
+      t: eventMs, raDeg: atEvent.raDeg, decDeg: atEvent.decDeg,
+    });
+
+    // Large/native runs may prune pass paths from the UI state. Recreate only this
+    // selected short segment from the loaded TLE rather than propagating an entire
+    // night for every event.
+    if (points.length < 2) {
+      var loc = SAT.state && SAT.state.activeLocation ? SAT.state.activeLocation() : null;
+      var obj = null;
+      if (SAT.state) {
+        if (SAT.state.getObj && event.satId != null) obj = SAT.state.getObj(event.satId);
+        if (!obj && SAT.state.objByNorad && event.norad != null) {
+          obj = SAT.state.objByNorad(event.norad);
+        }
+      }
+      if (loc && obj && SAT.prop && typeof SAT.prop.look === 'function') {
+        var count = 64;
+        var stepMs = (window.endMs - window.startMs) / count;
+        for (var i = 0; i <= count; i++) {
+          var tMs = window.startMs + stepMs * i;
+          try {
+            var look = SAT.prop.look(loc, obj, new Date(tMs), {
+              dut1S: SAT.state.obs && SAT.state.obs.dut1S,
+            });
+            pushOccultationTrackPoint(points, {
+              t: tMs, raDeg: look && look.raDeg, decDeg: look && look.decDeg,
+            });
+          } catch (e) { /* retain the valid portion of a decayed/invalid TLE */ }
+        }
+      }
+    }
+
+    points.sort(function (a, b) { return a.t - b.t; });
+    var unique = [];
+    points.forEach(function (point) {
+      var last = unique[unique.length - 1];
+      if (last && Math.abs(last.t - point.t) < 0.5) return;
+      unique.push(point);
+    });
+    return unique;
+  }
+
   /* ---- extended pass track (round-3 review) --------------------------------
    * The scan's `path` covers only tEnter..tExit — for a telescope-sized field a
    * few seconds of arc. The extended track samples the SAME object over the WHOLE
@@ -1000,6 +1243,155 @@
     return list.length;
   }
 
+  function drawOccultationTrack(points, eventMs, window) {
+    if (!points || points.length < 2 || !window) {
+      return { count: 0, start: null, end: null };
+    }
+    var projected = [];
+    for (var i = 0; i < points.length; i++) {
+      var point = projAt(points[i].raDeg, points[i].decDeg, points[i].t);
+      projected.push(point ? { point: point, t: points[i].t } : null);
+    }
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    var previous = null;
+    // A broad translucent under-stroke makes the passing track readable over dense
+    // star fields; the narrow orange line remains the actual angular path.
+    for (var layer = 0; layer < 2; layer++) {
+      previous = null;
+      ctx.strokeStyle = layer === 0 ? 'rgba(255,184,79,0.22)' : '#ffb84f';
+      ctx.lineWidth = layer === 0 ? 7 : 1.7;
+      for (var j = 0; j < projected.length; j++) {
+        var current = projected[j];
+        if (!current || !onScreen(current.point, 400)) {
+          previous = null;
+          continue;
+        }
+        if (previous) {
+          ctx.beginPath();
+          ctx.moveTo(previous.point.x, previous.point.y);
+          ctx.lineTo(current.point.x, current.point.y);
+          ctx.stroke();
+        }
+        previous = current;
+      }
+    }
+
+    // Sample dots and one arrow communicate that this is a time-ordered pass,
+    // rather than a static line between the star and satellite markers.
+    ctx.fillStyle = 'rgba(255,184,79,0.72)';
+    for (var k = 0; k < projected.length; k += Math.max(1, Math.floor(projected.length / 24))) {
+      var sample = projected[k];
+      if (!sample || !onScreen(sample.point, 4)) continue;
+      ctx.beginPath();
+      ctx.arc(sample.point.x, sample.point.y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    var arrow = null, bestDistance = Infinity;
+    for (var n = 1; n < projected.length; n++) {
+      var a = projected[n - 1], b = projected[n];
+      if (!a || !b || !onScreen(a.point, 30) || !onScreen(b.point, 30)) continue;
+      var length = Math.hypot(b.point.x - a.point.x, b.point.y - a.point.y);
+      if (length < 2) continue;
+      var middle = (a.t + b.t) / 2;
+      var distance = Math.abs(middle - eventMs);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        arrow = { a: a.point, b: b.point };
+      }
+    }
+    if (arrow) drawMotionArrow(arrow.a, arrow.b, '#ffb84f');
+
+    var first = projected.find(function (entry) { return entry && onScreen(entry.point, 20); });
+    var last = null;
+    for (var q = projected.length - 1; q >= 0; q--) {
+      if (projected[q] && onScreen(projected[q].point, 20)) { last = projected[q]; break; }
+    }
+    ctx.font = '10px ' + MONO;
+    if (first) haloText('−' + (window.beforeMs / 1000).toFixed(1) + 's',
+      first.point.x + 6, first.point.y - 8, '#ffb84f');
+    if (last && (!first || Math.hypot(last.point.x - first.point.x, last.point.y - first.point.y) > 18)) {
+      haloText('+' + (window.afterMs / 1000).toFixed(1) + 's',
+        last.point.x + 6, last.point.y + 8, '#ffb84f');
+    }
+    ctx.restore();
+    return { count: points.length, start: first, end: last };
+  }
+
+  function drawOccultationEvent(event, eventMs, trackWindow) {
+    if (!event || !isFinite(eventMs)) return { star: null, satellite: null };
+    var star = occultationStarOf(event);
+    if (!star) return { star: null, satellite: null };
+    var trackPoints = occultationTrackPoints(event, eventMs, trackWindow);
+    var satellite = occultationSatelliteOf(event, eventMs);
+    var starPoint = projAt(star.raDeg, star.decDeg, eventMs);
+    var satellitePoint = satellite
+      ? projAt(satellite.raDeg, satellite.decDeg, eventMs) : null;
+
+    var track = drawOccultationTrack(trackPoints, eventMs, trackWindow);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // The connector is deliberately drawn before either marker. At the typical
+    // sub-arcsecond separation it is short, but it still makes the two directions
+    // unambiguous when the chart is zoomed in.
+    if (onScreen(starPoint, 40) && onScreen(satellitePoint, 40)) {
+      ctx.strokeStyle = 'rgba(255,184,79,0.9)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(starPoint.x, starPoint.y);
+      ctx.lineTo(satellitePoint.x, satellitePoint.y);
+      ctx.stroke();
+    }
+
+    if (onScreen(starPoint, 40)) {
+      // Cyan circle + cross = fixed target star. It remains visible even when the
+      // catalogue magnitude layer is disabled or the star is outside its cache.
+      ctx.strokeStyle = '#4fc3f7';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(starPoint.x, starPoint.y, 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(starPoint.x - 12, starPoint.y);
+      ctx.lineTo(starPoint.x + 12, starPoint.y);
+      ctx.moveTo(starPoint.x, starPoint.y - 12);
+      ctx.lineTo(starPoint.x, starPoint.y + 12);
+      ctx.stroke();
+      ctx.font = '11px ' + MONO;
+      haloText('★ target star', starPoint.x + 14, starPoint.y - 10, '#4fc3f7');
+    }
+
+    if (onScreen(satellitePoint, 40)) {
+      // Pink diamond = satellite at the event epoch. The different geometry is
+      // intentional: at a real occultation the two markers can overlap almost
+      // perfectly, so colour alone is not enough to tell them apart.
+      var r = 8;
+      ctx.fillStyle = '#f06292';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(satellitePoint.x, satellitePoint.y - r);
+      ctx.lineTo(satellitePoint.x + r, satellitePoint.y);
+      ctx.lineTo(satellitePoint.x, satellitePoint.y + r);
+      ctx.lineTo(satellitePoint.x - r, satellitePoint.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = '11px ' + MONO;
+      haloText('◆ ' + (event.name || event.satId || 'satellite'),
+        satellitePoint.x + 14, satellitePoint.y + 11, '#f06292');
+    }
+    ctx.restore();
+    return {
+      star: starPoint, satellite: satellitePoint, direction: satellite,
+      track: track, trackWindow: trackWindow,
+    };
+  }
+
   function drawSunMoon(ra0, dec0, t, date) {
     if (!cfg().sunMoon) return null;
     var sun = null, moon = null, p;
@@ -1104,6 +1496,8 @@
     var list = [];
     // chartCrossings, not visibleCrossings: ticked rows narrow the drawn set
     try { list = SAT.state.chartCrossings() || []; } catch (e) { list = []; }
+    var eventWindow = occultationFocus && isFinite(occultationFocus.timeMs)
+      ? occultationTrackWindowOf(occultationFocus.event, occultationFocus.timeMs) : null;
 
     // The frame table has to cover everything that will be drawn across time: every
     // crossing path, plus the clock time itself.
@@ -1113,6 +1507,12 @@
       if (!pth || !pth.length) continue;
       if (pth[0].t < t0) t0 = pth[0].t;
       if (pth[pth.length - 1].t > t1) t1 = pth[pth.length - 1].t;
+    }
+    if (eventWindow) {
+      // A parked-mount frame is time-dependent. Include the selected event epoch
+      // and its adjacent passing track even if the ordinary scan has no crossings.
+      t0 = Math.min(t0, eventWindow.startMs);
+      t1 = Math.max(t1, eventWindow.endMs);
     }
     var tp = buildFrames(nowMs, t0, t1);
     if (!tp) {
@@ -1132,6 +1532,9 @@
     var moon = drawSunMoon(ra0, dec0, t, date);
     drawFov(t);
     var nCross = drawCrossings(list, nowMs);
+    var eventMarks = occultationFocus
+      ? drawOccultationEvent(occultationFocus.event, occultationFocus.timeMs, eventWindow)
+      : { star: null, satellite: null };
     drawScaleBar(t);
     drawCompass(t);
 
@@ -1153,6 +1556,10 @@
     hud += mount
       ? ' · parked: stars trail'
       : ' · sidereal: satellites streak';
+    if (occultationFocus) {
+      var focusedName = occultationFocus.event.name || occultationFocus.event.satId || 'satellite';
+      hud += ' · EVENT focus: ' + focusedName;
+    }
     elHud.textContent = hud;
 
     var foot = [];
@@ -1177,6 +1584,17 @@
       }
     }
     if (SAT.state.scan && SAT.state.scan.stale) foot.push('⚠ parameters changed — rescan');
+    if (occultationFocus) {
+      var focusTime = occultationFocus.timeMs;
+      foot.push('occultation ' + (focusTime == null ? 'time unavailable' :
+        SAT.util.fmtDate(new Date(focusTime))) +
+        (eventMarks.track && eventMarks.track.count > 1 ?
+          ' · track −' + (eventMarks.trackWindow.beforeMs / 1000).toFixed(1) +
+          '/+' + (eventMarks.trackWindow.afterMs / 1000).toFixed(1) + 's' :
+          ' · passing track unavailable') +
+        (eventMarks.star ? ' · target marked' : ' · target direction unavailable') +
+        (eventMarks.satellite ? ' · satellite marked' : ' · satellite direction unavailable'));
+    }
     if (moon) {
       foot.push('moon ' + SAT.frames.sep(ra0, dec0, moon.raDeg, moon.decDeg).toFixed(0) + '° away');
     }
@@ -1427,6 +1845,7 @@
         // decision to make.
         SAT.state.setObs({ flipEW: !SAT.state.obs.flipEW });
       }),
+      tbtn('eventClear', '×E', 'clear the selected occultation event focus', clearOccultationEvent),
       tbtn(null, '⤢', 'fit the field to the window', fitView),
     ]);
     body.appendChild(bar);
@@ -1444,6 +1863,7 @@
     toolBtns.constNames.classList.toggle('chart-on', !!c.constNames);
     toolBtns.grid.classList.toggle('chart-on', !!c.grid);
     toolBtns.labels.classList.toggle('chart-on', !!c.labels);
+    if (toolBtns.eventClear) toolBtns.eventClear.style.display = occultationFocus ? '' : 'none';
     toolBtns.mag.textContent = 'm' + c.magLimit;
   }
 
@@ -1475,10 +1895,24 @@
     // star field even when nothing else changed — the cache check below absorbs the
     // small steps and re-queries only when the field has really moved.
     SAT.bus.on('time', requestRender);
-    SAT.bus.on('obs-changed', function () { invalidateStars(); requestRender(); });
+    SAT.bus.on('obs-changed', function () {
+      // A manual pointing edit is an explicit exit from event-focus mode; keeping
+      // the old temporary tangent point would make the chart disagree with Pointing.
+      if (occultationFocus) clearOccultationEvent();
+      invalidateStars(); updateToolbar(); requestRender();
+    });
     SAT.bus.on('scan-done', requestRender);
     SAT.bus.on('filters-changed', requestRender);
     SAT.bus.on('selection-changed', requestRender);
+    SAT.bus.on('occultation-selection-changed', function (payload) {
+      if (payload && payload.event) showOccultationEvent(payload.event);
+    });
+    SAT.bus.on('occultation-state-changed', function () {
+      // Event records are transient; a new search must not leave a marker from the
+      // previous run attached to an unrelated result set.
+      if (occultationFocus) clearOccultationEvent();
+      updateToolbar(); requestRender();
+    });
     SAT.bus.on('settings-changed', function () {
       invalidateStars(); updateToolbar(); requestRender();
     });
@@ -1492,6 +1926,8 @@
 
   SAT.chart = {
     init: init, requestRender: requestRender, fitView: fitView,
+    showOccultationEvent: showOccultationEvent,
+    clearOccultationEvent: clearOccultationEvent,
     // Pure geometry, exported for tools/test_chart.js. The orientation transform is
     // the one piece of this file that can be — and must be — verified without a
     // browser; everything else is paint.
@@ -1501,6 +1937,7 @@
     _axisDirs: axisDirs,
     _gridStepDeg: gridStepDeg,
     _pathPosAt: pathPosAt,
+    _occultationTrackWindow: occultationTrackWindowOf,
     _extTrackOf: extTrackOf,
     _extPosAt: extPosAt,
     _lerpAngle: lerpAngle,

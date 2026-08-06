@@ -78,6 +78,7 @@
       shards[i % n].push({
         id: o.id, norad: o.norad, name: o.name, intl: o.intl,
         l1: o.l1, l2: o.l2, rcs: o.rcs, stdMag: o.stdMag,
+        type: o.type, cls: o.cls || null,
       });
     }
 
@@ -204,6 +205,112 @@
     if (!running) return;
     running.cancelled = true;
     pool.forEach((p) => p.w.postMessage({ cmd: 'cancel' }));
+  }
+
+  /** Emit an event for a caller-owned scan workflow. Raw scans must never use the
+   * ordinary `scan-*` channel unless that is explicitly requested and rejected by
+   * rawEventPrefix(); occultation callers normally pass `eventPrefix: 'occultation'`.
+   * A null/false/empty prefix deliberately disables raw progress events. */
+  function emitScoped(prefix, phase, payload) {
+    if (prefix == null || prefix === false || prefix === '') return;
+    const p = String(prefix).trim().replace(/-+$/, '');
+    if (p) SAT.bus.emit(p + '-' + phase, payload);
+  }
+
+  function rawEventPrefix(options) {
+    const o = options || {};
+    const prefix = Object.prototype.hasOwnProperty.call(o, 'eventPrefix')
+      ? o.eventPrefix : 'scan-raw';
+    if (String(prefix).trim() === 'scan') {
+      throw new Error('SAT.scan.runRaw() cannot use the ordinary scan event prefix');
+    }
+    return prefix;
+  }
+
+  function rawMaxResults(options) {
+    const o = options || {};
+    const value = o.maxResults == null ? 100000 : Number(o.maxResults);
+    if (!isFinite(value) || value < 0) {
+      throw new Error('SAT.scan.runRaw() maxResults must be a non-negative number');
+    }
+    return Math.floor(value);
+  }
+
+  function emitRawProgress(job, prefix) {
+    let done = 0, total = 0, phase = 'coarse';
+    for (let i = 0; i < job.progress.length; i++) {
+      const p = job.progress[i];
+      if (!p) continue;
+      done += p.done; total += p.total;
+      if (p.phase === 'fine') phase = 'fine';
+    }
+    emitScoped(prefix, 'progress', { done: done, total: total, phase: phase });
+  }
+
+  /** Run the existing worker protocol without touching ordinary scan state.
+   *
+   * The returned object intentionally stays at the worker geometry boundary:
+   * ordinary scan photometry, object-type enrichment, checked-row clearing and
+   * `SAT.state.scan` publication belong only to run(). `maxResults` is applied
+   * after shard merging so the caller receives a deterministic time-sorted set. */
+  async function runRaw(params, options) {
+    if (running) throw new Error('a scan is already running');
+    if (!params || typeof params !== 'object') {
+      throw new Error('SAT.scan.runRaw() requires scan parameters');
+    }
+
+    const objs = (SAT.state.catalog && SAT.state.catalog.objs) || [];
+    if (!objs.length) throw new Error('No catalogue loaded — fetch one in the Sources window.');
+
+    const o = options || {};
+    const maxResults = rawMaxResults(o);
+    const eventPrefix = rawEventPrefix(o);
+    const workerParams = Object.assign({}, params, { maxCrossings: maxResults });
+    const job = { cancelled: false, t0: Date.now(), progress: [] };
+    running = job;
+    emitScoped(eventPrefix, 'started', {
+      objects: objs.length, workers: workerCount(), spanMin: workerParams.spanMin,
+      maxResults: maxResults,
+    });
+
+    try {
+      await ensureLoaded();
+      if (job.cancelled) throw new Error('cancelled');
+
+      const results = await Promise.all(pool.map((p, i) => new Promise((res, rej) => {
+        job.progress[i] = { done: 0, total: 0, phase: 'coarse' };
+        p.onMsg = (m) => {
+          if (m.type === 'progress') {
+            job.progress[i] = { done: m.done, total: m.total, phase: m.phase };
+            emitRawProgress(job, eventPrefix);
+          } else if (m.type === 'result') {
+            res(m);
+          } else if (m.type === 'error') {
+            rej(new Error(m.error));
+          }
+        };
+        p.w.onerror = (e) => rej(new Error('scan worker error: ' + (e.message || e)));
+        p.w.postMessage({ cmd: 'scan', params: workerParams });
+      })));
+
+      if (job.cancelled || results.some((r) => r.cancelled)) throw new Error('cancelled');
+
+      const merged = mergeRawResults(results, maxResults);
+      const ms = Date.now() - job.t0;
+      running = null;
+      const payload = {
+        count: merged.crossings.length, ms: ms, truncated: merged.truncated,
+        culled: merged.culled, propagations: merged.propagations,
+      };
+      emitScoped(eventPrefix, 'done', payload);
+      return Object.assign(merged, { ms: ms });
+    } catch (err) {
+      running = null;
+      const e = (err && err.message === 'cancelled')
+        ? new Error('Raw scan cancelled') : err;
+      emitScoped(eventPrefix, 'failed', { error: e.message || String(e) });
+      throw e;
+    }
   }
 
   async function run() {
@@ -347,7 +454,8 @@
       // approach (for the altitude filter). A crossing lasts seconds to minutes,
       // so the CA height IS the height during the crossing; ≤ maxCrossings
       // propagations here cost single-digit milliseconds.
-      c.type = (obj && obj.type) || null;
+      c.type = (obj && obj.type) || c.type || null;
+      c.cls = c.cls || (obj && obj.cls) || null;
       c.altKm = null;
       if (obj && SAT.prop && SAT.prop.temeKm) {
         try {
@@ -369,6 +477,27 @@
     };
   }
 
+  /** Merge raw worker geometry without ordinary-scan enrichment or state writes. */
+  function mergeRawResults(results, maxResults) {
+    const culled = {
+      total: 0, bad: 0, stage1: 0, stage2: 0, stage3: 0, survivors: 0, candidates: 0,
+    };
+    let propagations = 0;
+    let all = [];
+    results.forEach((r) => {
+      if (r.culled) Object.keys(culled).forEach((k) => { culled[k] += (r.culled[k] || 0); });
+      propagations += r.propagations || 0;
+      all = all.concat(r.crossings || []);
+    });
+
+    all.sort((a, b) => a.tCaMs - b.tCaMs);
+    const truncated = all.length > maxResults;
+    if (truncated) all = all.slice(0, maxResults);
+    return {
+      crossings: all, culled: culled, truncated: truncated, propagations: propagations,
+    };
+  }
+
   /* ---- invalidation -------------------------------------------------------- */
 
   if (typeof SAT !== 'undefined' && SAT.bus) {
@@ -380,5 +509,5 @@
     });
   }
 
-  SAT.scan = { run, cancel, isRunning, estimate };
+  SAT.scan = { run, runRaw, cancel, isRunning, estimate };
 })();

@@ -22,6 +22,18 @@ only) + browser frontend (SGP4 in Web Workers, canvas chart). Companion to
 Module APIs are in [CONTRACT.md](CONTRACT.md); how it was built and what was
 measured is in [DEVLOG.md](DEVLOG.md).
 
+## Upstream and modifications
+
+This repository is a modified distribution of
+[SatIdentifier](https://github.com/exoplanet5/SatIdentifier), originally created
+by Zhuoxiao. The upstream project is licensed under the MIT License; the
+original copyright and license notice are retained in [LICENSE](LICENSE).
+
+This fork adds and changes satellite-occultation planning and event-search
+features, together with related native-window and headless workflows, tests,
+and documentation. These changes are maintained separately from the upstream
+project. See [NOTICE.md](NOTICE.md) for the attribution and third-party notices.
+
 ## Requirements
 
 **Packaged app** (in `release/`) — no runtime dependencies; Python and the star
@@ -65,6 +77,20 @@ Starts a local server on http://127.0.0.1:8476 and opens your browser.
 Options: `--port N`, `--no-browser`. Or double-click `SatIdentifier.command`.
 In dev mode data lives in `./data/`.
 
+**Source native-window mode** (the same pywebview interface as the packaged app):
+
+```sh
+python3.13 -m venv .venv
+.venv/bin/python -m pip install pywebview
+python3 desktop.py
+```
+
+This starts the local server inside a pywebview/WKWebView window rather than
+opening an external browser. The complete occultation search is available in
+this mode when Node.js is installed; it runs outside the WebView and streams
+progress back to the original Plan window. `SatIdentifier.command` prefers this
+mode automatically when pywebview is available.
+
 ## Workflow
 
 1. **Catalogue** — press *Load full catalogue* (Space-Track full GP; a free account
@@ -81,6 +107,59 @@ In dev mode data lives in `./data/`.
 3. **Pointing** — start time, timespan, pointing, field of view.
 4. **Crossings** — press *Scan*.
 5. **Sky Chart** — compare the trails against your frame.
+
+## Nightly satellite-occultation search (P0-11)
+
+The occultation workflow is separate from the ordinary *Crossings* scan:
+
+1. Load the catalogue in **Catalogue** and make a ground site active in **Sites**.
+2. Open **Occultation Plan**, choose the local date and IANA time zone, then set
+   the twilight altitude, minimum satellite elevation, the SatIdentifier scan tags
+   (`leo`, `meo`, `geo`, `heo`, `payload`, `rocket body`, `debris`), star magnitude
+   limit, search corridor, effective satellite radius, and **Contacts only**. The
+   classification filters are applied during pass scanning
+   and remain available for a second filter in the Events table. The last
+   option is enabled by default and keeps only complete geometric contacts or
+   grazes in the published event table; misses are still counted in the run
+   statistics.
+3. Press **Run occultation search**. In the native app, the original Plan
+   window remains the interface while the full calculation runs in a separate
+   Node process. Results appear in **Occultation Events**; click an event row to
+   pause at closest approach and focus the main **Sky Chart**, where the target
+   star, satellite, and the adjacent time-ordered passing track are marked. The
+   displayed track grows with the event duration and is clipped to the pass
+   bounds. The event table includes closest-approach Alt/Az and sortable
+   quantitative columns such as separation, size, duration, and geometry.
+   **Occultation Chart** remains available for the detailed tangent-plane path
+   view.
+4. **Contacts only** is enabled by default. The native run removes the
+   interactive 5,000-candidate cap, processes crossings one at a time, and
+   reports both the raw candidate count and the exact candidates evaluated.
+   Misses are counted but are not copied into the event table. The browser-only
+   Pass/Candidate limit fields do not cap the native complete run.
+
+### Browser-independent complete search
+
+For a full-catalogue run, use the headless process so the calculation is not
+held inside a browser tab:
+
+```sh
+node tools/run_occultation_headless.js \
+  --date 2026-08-06 \
+  --timezone Australia/Melbourne \
+  --lat -37.7966 --lon 144.9633 --alt 50
+```
+
+Add `--tags leo,payload` or use `--classes leo,meo,geo,heo` and/or
+`--types PAY,R/B,DEB` to apply the same SatIdentifier scan-tag filters in the
+headless search.
+
+It uses the same P0-11 SGP4 and contact solver, streams each crossing through a
+bounded 512-point path, removes the interactive 5,000-candidate cap, and writes
+JSON/CSV results under `data/occultation-results/`. The original pywebview Plan
+window is the UI; Node performs the calculation outside WebKit and sends back
+stage progress. A small Tk controller is also available with
+`python3 occultation_gui.py`.
 
 ## Observing from orbit (space-based SSA)
 

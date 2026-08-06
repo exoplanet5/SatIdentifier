@@ -291,16 +291,26 @@
     return s.slice(0, 10).replace(/-/g, '') + '-' + s.slice(11).replace(/:/g, '');
   }
 
-  function download(name, mime, text) {
+  async function download(name, mime, text) {
     try {
+      // Blob-URL downloads can be treated as navigation by macOS WKWebView.
+      // Use the native save dialog in the desktop shell instead.
+      if (typeof window !== 'undefined' && window.pywebview &&
+          window.pywebview.api && typeof window.pywebview.api.save_export === 'function') {
+        return await window.pywebview.api.save_export(name, mime, text);
+      }
       const blob = new Blob([text], { type: mime });
       const url = URL.createObjectURL(blob);
       const a = U.el('a', { href: url, download: name });
+      a.addEventListener('click', (event) => {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+      });
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       // revoked late: Safari cancels the download if the object URL dies first
       setTimeout(() => URL.revokeObjectURL(url), 4000);
+      return { ok: true };
     } catch (e) {
       console.warn('crossings: export failed', e);
     }
