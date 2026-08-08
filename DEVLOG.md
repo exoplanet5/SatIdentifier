@@ -935,6 +935,54 @@ Three sky-chart requests in one round:
   so the letter form can never reach a label. Confirmed live on
   analyst-range objects: `TBA - TO BE ASSIGNED [270375]`.
 
+### Round 21 (2026-08-08) — CelesTrak full catalogue; SATCAT button was metadata
+
+User report: the CelesTrak tab's "Fetch full SATCAT" button "downloads the
+file but does not load". **Verified, and it was working as built**: the button
+hits `/api/satcat/bulk`, which returns the `satcat.csv` *metadata* table
+(RCS / type / owner / launch — the photometry-enrichment join) and carries no
+elements at all, so `addTles` is never called and the catalogue count never
+moves. The label was the bug: "Fetch full SATCAT" reads as a catalogue loader.
+
+- **New endpoint `GET /api/celestrak/full`** — a real no-account full
+  catalogue. gp.php offers no full-catalogue query (probed GROUP=all/
+  catalog/full: "Invalid query"; the master-gp-index is a per-CATNR search
+  page), so the endpoint walks the bulk files: `catalog.csv` first (modern
+  OMM field names, full integer NORAD_CAT_ID, parsed by the new
+  `parse_omm_csv` through the same `omm_to_tle` path as the JSON endpoints),
+  then legacy `catalog.txt` via `parse_tles` — the one documented exception
+  to the FORMAT=json rule, since no OMM full-catalogue product exists. A
+  catalog.txt payload carries a `notes[]` caveat: by CelesTrak's stated
+  policy the TLE format never includes the 6-digit objects catalogued after
+  2026-07-11. Cached 6 h as `celestrak_full` (rehydrates via `catalogRefs`;
+  the Cache tab tags it `celestrak` by prefix). `enrich_full_catalog` is the
+  factored SATCAT/qsmag join + coverage counters now shared with
+  `/api/catalog/full`.
+- **Sources window**: top billing is now TWO buttons, **Load full catalogue
+  (CelesTrak)** above **Load full catalogue (Space-Track)** (the order the
+  user asked for), each with its own ⟳, status line and source note;
+  selected-object queries stay in the tabs. Each replaces only its own tag.
+  `acceptPayload` now surfaces payload `notes[]` on the status line. The
+  SATCAT button is relabelled **Fetch SATCAT metadata** with a
+  metadata-only hint — same behaviour, honest name.
+- **CelesTrak politeness, learned the hard way**: during verification this
+  network's IP was already temp-blocked for `/pub/TLE/catalog.txt`
+  ("excessive downloads … restored once ceased for 2 hours" — NOT caused by
+  SatIdentifier or SatObserver; neither ever fetched that path). To urllib
+  the block manifests as an SSL EOF mid-read, not a 403 page. The 6 h
+  `CATALOG_FRESH_S` cache is therefore load-bearing politeness, and the
+  502 message names the cooldown when a 403 does come through. The happy
+  path could not be exercised live against CelesTrak while blocked; it is
+  pinned by fixtures instead (below), and the UI error path was verified
+  live in the browser (clean ✗ status line, button re-enabled).
+- **New harness `tools/test_server.py`** (24 checks, no network — http_get
+  stubbed, cache in a tempdir): OMM-CSV parse incl. Alpha-5 synthesis and
+  checksum recompute, csv→txt fallback ladder, the legacy-file caveat note,
+  stale-cache serving, the no-cache ApiError with the cooldown text, and
+  catnum/catnum5 round trips at 100000/339999. test_ports [3] updated to
+  pin the two-provider layout, the button order, the source notes, and the
+  metadata relabel (76 checks).
+
 ## 13. Running the checks
 
 ```sh
@@ -946,6 +994,7 @@ node tools/test_chart.js        # projection and orientation
 node tools/test_crossings.js    # table, sorting, filters, export
 node tools/test_pointing.js     # parsing, mode-switch round trips
 node tools/test_ports.js        # sources / satinfo / allsky
+python3 tools/test_server.py    # backend catalogue fetching (network stubbed)
 ```
 
 All green as of 2026-07-21.

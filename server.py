@@ -69,6 +69,15 @@ CELESTRAK_INTDES_URL = "https://celestrak.org/NORAD/elements/gp.php?INTDES={intd
 CELESTRAK_NAME_URL = "https://celestrak.org/NORAD/elements/gp.php?NAME={name}&FORMAT=json"
 SATCAT_URL = "https://celestrak.org/satcat/records.php?CATNR={norad}&FORMAT=JSON"
 SATCAT_BULK_URL = "https://celestrak.org/pub/satcat.csv"
+# Full catalogue without an account (round 21): gp.php has no full-catalogue
+# query, so these are CelesTrak's whole-set bulk files, tried in order.
+# catalog.csv (modern OMM field names, full integer NORAD_CAT_ID) first; the
+# legacy catalog.txt TLE file is the fallback, and by CelesTrak's stated policy
+# it omits the 6-digit objects catalogued after 2026-07-11.
+CELESTRAK_FULL_URLS = [
+    "https://celestrak.org/pub/TLE/catalog.csv",
+    "https://celestrak.org/pub/TLE/catalog.txt",
+]
 QSMAG_URL = "https://www.mmccants.org/programs/qsmag.zip"
 # Rounds 15-16: the chart's deep star field is a LOCAL tile set
 # (data/deepstars/, V <= 13, built once by tools/make_starcat.py --deep-tiles)
@@ -311,6 +320,24 @@ def omm_records_to_tles(records):
         except Exception:
             continue  # skip malformed records
     return out
+
+
+def parse_omm_csv(text):
+    """CelesTrak OMM CSV -> [{name, l1, l2, norad}].
+
+    DictReader rows carry the OMM field names (NORAD_CAT_ID, EPOCH,
+    MEAN_MOTION, ...) as strings, which is exactly what omm_to_tle already
+    consumes, so this rides the same synthesis path as the JSON endpoints.
+    Non-OMM text (an HTML error page, a TLE file) returns [] so the caller can
+    fall through to its next source instead of failing.
+    """
+    try:
+        rows = list(csv.DictReader(io.StringIO(text)))
+    except csv.Error:
+        return []
+    if not rows or "NORAD_CAT_ID" not in rows[0]:
+        return []
+    return omm_records_to_tles(rows)
 
 
 def iso_now():
@@ -718,6 +745,95 @@ def enrich_best_effort(tles):
     return enrich_tles(tles, satcat, mags)
 
 
+def enrich_full_catalog(tles, notes):
+    """SATCAT/qsmag join for a whole-catalogue payload, plus the coverage
+    counters the UI surfaces (so it can say "879 of 16 078 have an RCS" rather
+    than leaving a mostly-guessed magnitude column looking authoritative).
+
+    Availability problems are appended to `notes` instead of failing: a
+    missing lookup table costs a photometry tier, not the fetch. withRcs being
+    a few percent is expected, not a broken join: CelesTrak publishes no RCS
+    above NORAD 50000 (see parse_satcat_csv), which is why withType — near
+    100% — is the one that carries the photometry.
+    """
+    try:
+        satcat = load_satcat_bulk().get("records") or {}
+    except ApiError as e:
+        satcat = {}
+        notes.append(f"SATCAT unavailable ({e.msg}) — no RCS this run")
+    qsm = load_qsmag()
+    if qsm.get("unavailable"):
+        notes.append(f"qsmag unavailable ({qsm['unavailable']}) — RCS tier only")
+    enrich_tles(tles, satcat, qsm.get("mags") or {})
+    return {
+        "withIntl": sum(1 for t in tles if t["intl"] is not None),
+        "withRcs": sum(1 for t in tles if t["rcs"] is not None),
+        "withType": sum(1 for t in tles if t["type"] is not None),
+        "withStdMag": sum(1 for t in tles if t["stdMag"] is not None),
+    }
+
+
+def celestrak_full_payload(refresh=False):
+    """The no-account full catalogue (round 21), cached like catalog_full.
+
+    CelesTrak's gp.php deliberately offers no full-catalogue query, so this
+    walks the whole-set bulk files in CELESTRAK_FULL_URLS: catalog.csv first
+    (modern OMM field names, full integer NORAD_CAT_ID), then the legacy
+    catalog.txt TLE file — which by CelesTrak's stated policy never carries
+    the 6-digit objects catalogued after 2026-07-11, so a catalog.txt-sourced
+    payload says so in `notes`; those recent launches are exactly what an
+    unidentified trail often turns out to be, and Space-Track remains the
+    complete set. Standard cache shape: fresh -> serve; stale + failure ->
+    serve stale; nothing -> ApiError.
+
+    The CATALOG_FRESH_S window here is load-bearing politeness, not just
+    economy: CelesTrak temp-blocks an IP that re-downloads a bulk file before
+    its content updates (403, ~2 h cooldown), so the 403 branch names that
+    cooldown instead of leaving a bare status code.
+    """
+    key = "celestrak_full"
+    cached = cache_read(key)
+    if (cached and not refresh
+            and time.time() - cached.get("fetchedUnix", 0) < CATALOG_FRESH_S):
+        return cached
+    tles, src, errors = [], None, []
+    for url in CELESTRAK_FULL_URLS:
+        name = url.rsplit("/", 1)[-1]
+        try:
+            raw = http_get(url)
+        except urllib.error.HTTPError as e:
+            errors.append(f"{name}: HTTP {e.code}" + (
+                " (CelesTrak rate-block — typically clears ~2 h after bulk "
+                "downloads stop)" if e.code == 403 else ""))
+            continue
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            continue
+        text = raw.decode("utf-8", "replace")
+        got = parse_omm_csv(text) if name.endswith(".csv") else parse_tles(text)
+        if got:
+            tles, src = got, name
+            break
+        errors.append(f"{name}: no elements parsed")
+    if not tles:
+        if cached:
+            return {**cached, "stale": True}
+        raise ApiError(502, "CelesTrak full catalogue fetch failed — "
+                            + "; ".join(errors))
+    notes = []
+    if src == "catalog.txt":
+        notes.append("legacy TLE file: objects catalogued after 2026-07-11 "
+                     "(NORAD >= 100000) are absent — Space-Track carries them")
+    counts = enrich_full_catalog(tles, notes)
+    payload = make_payload(f"celestrak:{src}", tles)
+    payload.update(counts)
+    payload["cacheKey"] = key
+    if notes:
+        payload["notes"] = notes
+    cache_write(key, payload)
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -795,6 +911,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._celestrak_tle(qs)
             if path == "/api/celestrak/query":
                 return self._celestrak_query(qs)
+            if path == "/api/celestrak/full":
+                return self._celestrak_full(qs)
             if path == "/api/catalog/full":
                 return self._catalog_full(qs)
             if path == "/api/spacetrack/config":
@@ -944,6 +1062,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cache_write(key, payload)
         self._respond(200, payload)
 
+    def _celestrak_full(self, qs):
+        """The no-account full catalogue (round 21) — celestrak_full_payload."""
+        self._respond(200, celestrak_full_payload(qs.get("refresh") == "1"))
+
     def _stars_deep(self):
         """Presence probe for the deep star tile set (round 15).
 
@@ -982,11 +1104,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         Space-Track only (class/gp, on-orbit, epoch < 30 d): it carries the
         analyst and unnamed objects, which are disproportionately the things
         an unidentified trail turns out to be. There is deliberately NO
-        CelesTrak fallback any more — the UI reports epoch-age statistics per
-        source, and a catalogue that silently swaps provenance would scramble
-        them; an error naming the fix beats a quietly different dataset.
-        Fetched as OMM JSON, never FORMAT=tle, because the catalogue passed
-        NORAD 100000 in June 2026.
+        CelesTrak fallback — the UI reports epoch-age statistics per source,
+        and a catalogue that silently swaps provenance would scramble them;
+        an error naming the fix beats a quietly different dataset. (Round 21's
+        /api/celestrak/full is a separate, explicitly-labelled path, never a
+        fallback here.) Fetched as OMM JSON, never FORMAT=tle, because the
+        catalogue passed NORAD 100000 in June 2026.
 
         The SATCAT/qsmag join is best-effort: a missing lookup table costs a
         photometry tier, not the scan.
@@ -1022,26 +1145,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._respond(200, {**cached, "stale": True})
             raise ApiError(502, f"{source} returned no elements")
 
-        try:
-            satcat = load_satcat_bulk().get("records") or {}
-        except ApiError as e:
-            satcat = {}
-            notes.append(f"SATCAT unavailable ({e.msg}) — no RCS this run")
-        qsm = load_qsmag()
-        if qsm.get("unavailable"):
-            notes.append(f"qsmag unavailable ({qsm['unavailable']}) — RCS tier only")
-        enrich_tles(tles, satcat, qsm.get("mags") or {})
-
+        counts = enrich_full_catalog(tles, notes)
         payload = make_payload(source, tles)
-        # Surfaced so the UI can say "879 of 16 078 have an RCS" rather than
-        # leaving a mostly-guessed magnitude column looking authoritative.
-        # withRcs being a few percent is expected, not a broken join: CelesTrak
-        # publishes no RCS above NORAD 50000 (see parse_satcat_csv), which is
-        # why withType — near 100% — is the one that carries the photometry.
-        payload["withIntl"] = sum(1 for t in tles if t["intl"] is not None)
-        payload["withRcs"] = sum(1 for t in tles if t["rcs"] is not None)
-        payload["withType"] = sum(1 for t in tles if t["type"] is not None)
-        payload["withStdMag"] = sum(1 for t in tles if t["stdMag"] is not None)
+        payload.update(counts)
         # cacheKey lets the frontend re-hydrate this exact payload from
         # /api/cache/<key> on reload without re-deriving the key from `source`
         payload["cacheKey"] = key

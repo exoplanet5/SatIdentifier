@@ -1085,22 +1085,40 @@ Secondary window, closed by default. Expose: `SAT.allsky = { init, requestRender
 Ported from SatObserver. `sources` loses the family concept AND (round-1 review)
 the CelesTrak **group** tab: a group subset invites "identify against Starlink
 only", and a negative result from a subset means nothing. Round 13 brings
-CelesTrak back as **single-object queries only** — no group fetch — which carry
-no such trap: a CelesTrak tab with NORAD IDs (≤ 20; gp.php answers one CATNR per
+CelesTrak back as **single-object queries only**, which carry no such trap: a
+CelesTrak tab with NORAD IDs (≤ 20; gp.php answers one CATNR per
 request) / INTLDES–COSPAR (whole launch; a piece letter narrows it) / Name-contains
 queries via `GET /api/celestrak/query`, merged additively under the `celestrak`
 source tag (own ✕ clear button, own line in the freshness block, rehydrated via
-`catalogRefs` like Space-Track and McCants). The same tab carries a **Fetch full
-SATCAT** row: downloads `satcat.csv` into the `satcat_bulk` cache — the exact
-table that feeds the rcs/type photometry enrichment and the info panel — with an
-on-file status line (`/api/satcat/bulk?status=1`, a slim probe that must never
-trigger the 7 MB download by itself). Query-value inputs are deliberately narrow
-(130 px): the row has to fit type selector, value, and buttons in the default
-window width.
+`catalogRefs` like Space-Track and McCants). Round 21 adds the CelesTrak **full
+catalogue** (`GET /api/celestrak/full`, below): the whole set is not a subset,
+so it carries none of the round-1 trap — the ban stays on *group* fetches.
 
-The catalogue is thus built from **Space-Track** (Load full catalogue,
-`replace:true`, plus one-off NORAD/name queries merged additively), **CelesTrak
-object queries**, **McCants** (files merged additively), and **Paste** (each paste
+**Top billing (round 21): two full-catalogue buttons, each naming its
+provider.** The window's header block carries **Load full catalogue
+(CelesTrak)** — no account needed — ABOVE **Load full catalogue (Space-Track)**
+— the complete set, analyst objects included, credentials required — each with
+its ⟳ force-refresh, its own status line, and a one-line source note beneath
+it. Each replaces only its OWN tag's set (`replace:true` on `celestrak` /
+`spacetrack`), so the freshness block's provenance stays truthful whichever is
+pressed; selected-object queries stay in the tabs below. The CelesTrak tab's
+former "Fetch full SATCAT" button is relabelled **Fetch SATCAT metadata**
+(round 21, after it was mistaken for a catalogue loader): it downloads
+`satcat.csv` into the `satcat_bulk` cache — the exact table that feeds the
+rcs/type photometry enrichment and the info panel — and adds NO objects to the
+catalogue; its hint says so. It keeps the on-file status line
+(`/api/satcat/bulk?status=1`, a slim probe that must never trigger the 7 MB
+download by itself). `acceptPayload` surfaces a payload's `notes[]` on the
+status line — a caveat like "legacy TLE file: post-2026-07 objects absent"
+must reach the user, not just the JSON. Query-value inputs are deliberately
+narrow (130 px): the row has to fit type selector, value, and buttons in the
+default window width.
+
+The catalogue is thus built from **Space-Track** (full catalogue
+`replace:true`, plus one-off NORAD/name queries merged additively),
+**CelesTrak** (full catalogue `replace:true` under its own tag, plus object
+queries merged additively), **McCants** (files merged additively), and
+**Paste** (each paste
 merges additively; a clear button removes the pasted set). All loads go through
 `SAT.state.addTles`. The
 freshness display shows **epoch-age statistics per source** — count, newest, median,
@@ -1148,7 +1166,9 @@ New or changed:
 - `GET /api/catalog/full[?refresh=1]` — the object set the scan runs against.
   Space-Track `class/gp/decay_date/null-val/epoch/>now-30` — **Space-Track only**
   (round-1 review removed the CelesTrak fallback: the UI reports provenance per
-  source, and a silently swapped dataset would scramble it). 401 with a message
+  source, and a silently swapped dataset would scramble it; round 21's CelesTrak
+  full catalogue is a separate, explicitly-labelled endpoint and button, never a
+  silent fallback here). 401 with a message
   naming the fix when no credentials are saved. Returns a `TlePayload` **enriched**
   with `rcs`, `type` and `stdMag` per object by joining the two tables below, and
   carrying `cacheKey` so the frontend can re-hydrate the exact payload from
@@ -1161,7 +1181,10 @@ New or changed:
 ### Catalog numbers past 100000 — do not regress this
 
 The public catalogue passed NORAD 100000 in June 2026, so **every provider is fetched
-as `FORMAT=json` (OMM), never `FORMAT=tle`/`3le`**. The authoritative NORAD id is the
+as `FORMAT=json` (OMM), never `FORMAT=tle`/`3le`** (one documented exception:
+`/api/celestrak/full`'s legacy `catalog.txt` fallback — CelesTrak publishes no
+full-catalogue OMM query at all; see that endpoint's bullet. The parsed `norad`
+is still the full integer, via `catnum()`'s Alpha-5 decode). The authoritative NORAD id is the
 integer `NORAD_CAT_ID` field; the TLE line pair is taken from the record when present
 or synthesized by the server-side `omm_to_tle` writer, which encodes columns 3–7 as
 Alpha-5 for 100000–339999 and writes the placeholder `'00000'` above that (checksums
@@ -1173,6 +1196,21 @@ for SATCAT/qsmag and the thing the user types into a search box. Port `catnum()`
 This matters more here than in SatObserver: that app imports hand-picked objects,
 whereas this one runs against the **whole** catalogue, where the high-numbered recent
 launches and analyst objects are exactly the unidentified trails people are chasing.
+- `GET /api/celestrak/full[?refresh=1]` (round 21) — the no-account full
+  catalogue. CelesTrak's gp.php deliberately offers no full-catalogue query, so
+  this walks the bulk files under `/pub/TLE/`: `catalog.csv` first (modern OMM
+  field names, full integer `NORAD_CAT_ID`, parsed by `parse_omm_csv` through
+  the same `omm_to_tle` synthesis path as the JSON endpoints), then the legacy
+  `catalog.txt` TLE file — **the one documented exception to the FORMAT=json
+  rule above**. By CelesTrak's stated policy the TLE format never carries the
+  6-digit objects catalogued after 2026-07-11, so a `catalog.txt`-sourced
+  payload says so in `notes` (and the UI shows it); Space-Track remains the
+  complete set. Enriched and counted exactly like `/api/catalog/full` (shared
+  helper `enrich_full_catalog`); cached as `celestrak_full.json`, fresh < 6 h,
+  stale fallback with `"stale":true`. The 6 h window is load-bearing
+  politeness, not just economy: CelesTrak temp-blocks an IP that re-downloads
+  a bulk file before its content updates (403 with a ~2 h cooldown), and the
+  error message names that cooldown when it happens.
 - `GET /api/satcat/bulk[?refresh=1]` — the whole CelesTrak SATCAT
   (`https://celestrak.org/pub/satcat.csv`), parsed to `{norad: {intl, rcs, name,
   launch, owner, opStatus}}`. Cached 30 d as `satcat_bulk.json`. This is what

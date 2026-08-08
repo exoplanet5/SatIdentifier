@@ -362,16 +362,28 @@ console.log('\n[3] sources.js — freshness banner and object counts');
   ok('"Full catalogue" has top billing',
     fresh.includes('Load full catalogue') &&
     fresh.indexOf('Load full catalogue') < fresh.indexOf('McCants'));
-  ok('names Space-Track as THE full-catalogue provider',
-    /Space-Track full GP/.test(fresh));
   // Round 13: CelesTrak is BACK, but as single-object queries only — the round-1
-  // objection was to GROUP subsets, and the group fetch stays gone.
+  // objection was to GROUP subsets, and the group fetch stays gone. Round 21
+  // adds the CelesTrak FULL catalogue (the whole set is not a subset).
   const SRC = fs.readFileSync(path.join(APP, 'sources.js'), 'utf8');
+  ok('two full-catalogue providers, CelesTrak ABOVE Space-Track (round 21)',
+    fresh.indexOf('Load full catalogue (CelesTrak)') >= 0 &&
+    fresh.indexOf('Load full catalogue (Space-Track)') >= 0 &&
+    fresh.indexOf('Load full catalogue (CelesTrak)') <
+      fresh.indexOf('Load full catalogue (Space-Track)') &&
+    /celestrak\/full/.test(SRC));
+  ok('each provider button carries its source note',
+    /Source: CelesTrak bulk catalogue/.test(fresh) &&
+    /Source: Space-Track full GP/.test(fresh));
   ok('keeps the Space-Track / CelesTrak / McCants / paste / cache tabs',
     ['Space-Track', 'CelesTrak', 'McCants', 'Paste TLE', 'Cache'].every(t => fresh.includes(t)));
   ok('CelesTrak tab is object-query only — no group fetch',
     /celestrak\/query/.test(SRC) && !/celestrak\/tle/.test(SRC));
-  ok('carries the full-SATCAT fetch row', fresh.includes('Fetch full SATCAT') &&
+  // Round 21: the row is explicitly METADATA — the old "Fetch full SATCAT"
+  // label read as a catalogue loader, and satcat.csv carries no elements.
+  ok('SATCAT row is labelled metadata and says it loads no elements',
+    fresh.includes('Fetch SATCAT metadata') && !fresh.includes('Fetch full SATCAT') &&
+    /does not load orbital elements/.test(fresh) &&
     /satcat\/bulk\?status=1/.test(SRC) && /satcat\/bulk\?refresh=1&status=1/.test(SRC));
   ok('query-value inputs are the narrow 130px (round 13)',
     (SRC.match(/width:130px/g) || []).length >= 2);

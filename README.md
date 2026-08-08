@@ -26,8 +26,10 @@ measured is in [DEVLOG.md](DEVLOG.md).
 
 **Packaged app** (in `release/`) — no runtime dependencies; Python and the star
 catalogue are bundled. Network access is needed for catalogue fetching (cached
-data works offline). A free [space-track.org](https://www.space-track.org)
-account is required for the full catalogue (saved locally on first use).
+data works offline). The full catalogue loads from CelesTrak with no account,
+or — complete, including analyst and newly catalogued objects — from a free
+[space-track.org](https://www.space-track.org) account (saved locally on
+first use).
 
 - **macOS** (`SatIdentifier-macOS-arm64.zip`): Apple Silicon. Unsigned — first
   launch on another machine needs right-click → Open once. User data lives in
@@ -67,13 +69,17 @@ In dev mode data lives in `./data/`.
 
 ## Workflow
 
-1. **Catalogue** — press *Load full catalogue* (Space-Track full GP; a free account
-   is required and saved locally). Add CelesTrak single-object queries (NORAD /
-   COSPAR / name-contains, no account needed — the same tab also downloads the full
-   SATCAT metadata table), McCants classified elements, or paste TLEs — everything
-   merges into one catalogue, deduplicated by NORAD with the newest elements
-   winning, and **epoch-age statistics are shown per source**, because stale
-   elements are the main cause of a failed identification.
+1. **Catalogue** — load the full catalogue from either provider: *CelesTrak*
+   (bulk catalogue file, no account; the legacy TLE file omits objects
+   catalogued after 2026-07) or *Space-Track* (full GP; free account required,
+   saved locally; the complete set — analyst and 6-digit objects included).
+   Add CelesTrak single-object queries (NORAD / COSPAR / name-contains, no
+   account needed — the same tab's *Fetch SATCAT metadata* button downloads
+   the SATCAT table that feeds photometry, not elements), McCants classified
+   elements, or paste TLEs — everything merges into one catalogue,
+   deduplicated by NORAD with the newest elements winning, and **epoch-age
+   statistics are shown per source**, because stale elements are the main
+   cause of a failed identification.
 2. **Sites** — add your observing site and mark it active. Two kinds: **Ground**
    (lat / lon / alt) or **Orbit** (an observing satellite, picked from the loaded
    catalogue by NORAD number or name — the TLE is resolved live from the

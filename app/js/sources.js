@@ -1,14 +1,17 @@
 /* SAT.ui.sources — where the object set comes from.
  *
- * The catalogue is a MERGED set from four sources — Space-Track (the full GP
- * catalogue plus one-off queries), CelesTrak single-object queries, McCants
- * classified files, and pasted TLEs — deduplicated by NORAD with the newest
- * elements winning. Every action here goes through state.addTles(tag, payload,
- * {replace}), which also rebuilds every satrec up front (see "Performance
- * decisions" in CONTRACT.md). There is deliberately no CelesTrak GROUP fetch
- * (round-1 review): a group subset invites "identify against Starlink only", and
- * a negative result from a subset means nothing. The round-13 CelesTrak tab is
- * single-OBJECT queries only (NORAD / COSPAR / name), which carry no such trap.
+ * The catalogue is a MERGED set from four sources — Space-Track (full GP
+ * catalogue plus one-off queries), CelesTrak (full bulk catalogue plus
+ * single-object queries), McCants classified files, and pasted TLEs —
+ * deduplicated by NORAD with the newest elements winning. Every action here
+ * goes through state.addTles(tag, payload, {replace}), which also rebuilds
+ * every satrec up front (see "Performance decisions" in CONTRACT.md). There is
+ * deliberately no CelesTrak GROUP fetch (round-1 review): a group subset
+ * invites "identify against Starlink only", and a negative result from a
+ * subset means nothing. The round-13 CelesTrak tab is single-OBJECT queries
+ * only (NORAD / COSPAR / name), and the round-21 CelesTrak FULL catalogue is
+ * the whole set, not a subset — neither carries that trap; the ban is on
+ * groups.
  *
  * The per-source freshness block is the reason this window is worth opening. A
  * failed identification is far more often stale elements than a wrong pointing, and
@@ -139,6 +142,9 @@
     if (!replace) msg += '  ·  +' + res.added + ' new, ' + res.updated + ' updated';
     if (res.bad) msg += '  ·  ' + res.bad + ' unparseable';
     if (payload.stale) msg += '  ·  served from stale disk cache (network failed)';
+    // Server-side caveats (round 21) — e.g. "legacy TLE file: post-2026-07
+    // objects absent" — must reach the user, not just sit in the JSON.
+    if (payload.notes && payload.notes.length) msg += '  ·  ' + payload.notes.join('  ·  ');
     status.textContent = msg;
     status.className = payload.stale ? 'warn' : 'dim';
     return res;
@@ -200,7 +206,38 @@
     // ---------- top billing: the full catalogue ----------
     // This is the action the tool exists for: identification against everything,
     // including the debris and rocket bodies unexpected trails usually turn out to
-    // be. It is a button, not a menu entry inside a tab, for that reason.
+    // be. Buttons, not menu entries inside tabs, for that reason. Round 21: TWO
+    // providers, each named on its button with a source note beneath — CelesTrak
+    // (bulk file, no account) above Space-Track (the complete set, account
+    // required) — after the SATCAT metadata button was mistaken for a CelesTrak
+    // catalogue loader. Each replaces only its OWN source tag, so the freshness
+    // block's provenance stays truthful whichever is pressed; selected-object
+    // queries live in the tabs below.
+    const ctStatus = U.el('span', { class: 'dim', style: 'font-size:11px' }, '');
+    const ctGo = async (refresh) => {
+      if (ctBtn.disabled) return;
+      busy(ctBtn, ctStatus, refresh
+        ? 'Re-fetching the CelesTrak full catalogue…'
+        : 'Fetching the CelesTrak full catalogue…');
+      ctRefresh.disabled = true;
+      try {
+        const d = await api('/api/celestrak/full' + (refresh ? '?refresh=1' : ''));
+        ctBtn.disabled = false; ctRefresh.disabled = false;
+        acceptPayload('celestrak', d, ctStatus, true);   // replaces the CelesTrak set
+      } catch (e) {
+        fail(ctBtn, ctStatus, e);
+        ctRefresh.disabled = false;
+      }
+    };
+    const ctBtn = U.el('button', {
+      class: 'btn primary', style: 'font-size:13px;padding:5px 12px',
+      onclick: () => ctGo(false),
+    }, 'Load full catalogue (CelesTrak)');
+    const ctRefresh = U.el('button', {
+      class: 'btn', title: 'Bypass the 6 h disk cache and re-fetch from CelesTrak',
+      onclick: () => ctGo(true),
+    }, '⟳ Force refresh');
+
     const fullStatus = U.el('span', { class: 'dim', style: 'font-size:11px' }, '');
     const fullGo = async (refresh) => {
       if (fullBtn.disabled) return;
@@ -223,7 +260,7 @@
     const fullBtn = U.el('button', {
       class: 'btn primary', style: 'font-size:13px;padding:5px 12px',
       onclick: () => fullGo(false),
-    }, 'Load full catalogue');
+    }, 'Load full catalogue (Space-Track)');
     const fullRefresh = U.el('button', {
       class: 'btn', title: 'Bypass the 6 h disk cache and re-fetch from Space-Track',
       onclick: () => fullGo(true),
@@ -231,12 +268,18 @@
 
     body.appendChild(U.el('div', { class: 'src-head' }, [
       headerHost,
+      U.el('div', { class: 'src-full' }, [ctBtn, ctRefresh, ctStatus]),
+      U.el('div', { class: 'src-hint' },
+        'Source: CelesTrak bulk catalogue file (catalog.csv / legacy catalog.txt) ' +
+        '— no account needed. The legacy TLE file omits objects catalogued after ' +
+        '2026-07 (NORAD ≥ 100000); the Space-Track set below is complete.'),
       U.el('div', { class: 'src-full' }, [fullBtn, fullRefresh, fullStatus]),
       U.el('div', { class: 'src-hint' },
-        'Space-Track full GP (on-orbit, epoch < 30 d — includes the analyst and ' +
-        'unnamed objects an unidentified trail usually turns out to be). Requires ' +
-        'credentials, saved in the Space-Track section below. CelesTrak queries, ' +
-        'McCants files and pasted TLEs merge into the same catalogue.'),
+        'Source: Space-Track full GP (on-orbit, epoch < 30 d — includes the ' +
+        'analyst, unnamed and newest 6-digit objects an unidentified trail ' +
+        'usually turns out to be). Requires a free account, saved in the ' +
+        'Space-Track tab below. Object queries, McCants files and pasted TLEs ' +
+        'merge into the same catalogue.'),
     ]));
 
     // ---------- tabs ----------
@@ -355,8 +398,11 @@
       const qBtn = U.el('button', { class: 'btn primary', onclick: () => goQ(false) }, 'Fetch');
       const qBtnR = U.el('button', { class: 'btn', title: 'Bypass 2 h cache', onclick: () => goQ(true) }, '⟳');
 
-      // full SATCAT snapshot — metadata (rcs/type/owner/launch), not TLEs; the
-      // same satcat_bulk table that enriches every fetch and feeds the info panel
+      // SATCAT snapshot — METADATA (rcs/type/owner/launch), not TLEs; the same
+      // satcat_bulk table that enriches every fetch and feeds the info panel.
+      // Round 21: labelled "metadata" loudly, with a hint — this button used to
+      // say "Fetch full SATCAT" and was mistaken for a catalogue loader (it
+      // adds no objects); the full catalogue buttons live at the top now.
       const scStatus = U.el('span', { class: 'dim', style: 'font-size:11px' }, '');
       function scShow(d) {
         scStatus.textContent = d.present
@@ -367,9 +413,10 @@
       api('/api/satcat/bulk?status=1').then(scShow).catch(() => {});
       const scBtn = U.el('button', {
         class: 'btn small',
-        title: 'Download the complete CelesTrak satellite catalog (satcat.csv, ~7 MB) so ' +
-          'RCS/type photometry enrichment and launch/owner metadata work offline for ' +
-          'every cataloged object',
+        title: 'Download the complete CelesTrak SATCAT metadata table (satcat.csv, ' +
+          '~7 MB): radar cross-section, object type, owner and launch data used by ' +
+          'the photometry tiers and the info panel. Adds NO objects to the catalogue ' +
+          '— to load elements use "Load full catalogue (CelesTrak)" at the top',
         onclick: async () => {
           scBtn.disabled = true;
           scStatus.textContent = 'downloading satcat.csv…';
@@ -377,7 +424,7 @@
           catch (e) { scStatus.textContent = '✗ ' + (e && e.message ? e.message : e); }
           scBtn.disabled = false;
         },
-      }, 'Fetch full SATCAT');
+      }, 'Fetch SATCAT metadata');
 
       panes['CelesTrak'].appendChild(U.el('div', null, [
         U.el('div', { class: 'row' }, [U.el('span', { class: 'dim' }, 'Object'),
@@ -391,6 +438,9 @@
         status,
         U.el('div', { class: 'sep' }),
         U.el('div', { class: 'row' }, [scBtn, scStatus]),
+        U.el('div', { class: 'src-hint' },
+          'Metadata only (RCS / type / owner / launch) — improves magnitude ' +
+          'estimates and the info panel; it does not load orbital elements.'),
       ]));
     }
 
