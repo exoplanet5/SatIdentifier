@@ -268,18 +268,15 @@
 
     body.appendChild(U.el('div', { class: 'src-head' }, [
       headerHost,
+      // Hints are credentials-only (round 21 follow-up, user request): the
+      // button labels already name the provider, and caveats like the
+      // legacy-file warning arrive via payload notes[] on the status line —
+      // shown when they actually apply instead of as standing text.
       U.el('div', { class: 'src-full' }, [ctBtn, ctRefresh, ctStatus]),
-      U.el('div', { class: 'src-hint' },
-        'Source: CelesTrak bulk catalogue file (catalog.csv / legacy catalog.txt) ' +
-        '— no account needed. The legacy TLE file omits objects catalogued after ' +
-        '2026-07 (NORAD ≥ 100000); the Space-Track set below is complete.'),
+      U.el('div', { class: 'src-hint' }, 'No account needed.'),
       U.el('div', { class: 'src-full' }, [fullBtn, fullRefresh, fullStatus]),
       U.el('div', { class: 'src-hint' },
-        'Source: Space-Track full GP (on-orbit, epoch < 30 d — includes the ' +
-        'analyst, unnamed and newest 6-digit objects an unidentified trail ' +
-        'usually turns out to be). Requires a free account, saved in the ' +
-        'Space-Track tab below. Object queries, McCants files and pasted TLEs ' +
-        'merge into the same catalogue.'),
+        'Free space-track.org account required — saved in the Space-Track tab below.'),
     ]));
 
     // ---------- tabs ----------
@@ -358,9 +355,8 @@
           U.el('label', { class: 'chk' }, [saveChk, 'save']), credNote]),
         U.el('div', { class: 'row' }, [U.el('span', { class: 'dim' }, 'Query'), qType, qVal, btn]),
         U.el('div', { class: 'src-hint' },
-          'Requires a free space-track.org account; credentials are stored locally in ' +
-          'data/config.json and used by the Load full catalogue button above. Queries ' +
-          'here merge into the catalogue without replacing it.'),
+          'Credentials are stored locally (data/config.json) and used by ' +
+          'Load full catalogue above. Queries merge additively.'),
         status,
       ]));
     }
@@ -430,17 +426,15 @@
         U.el('div', { class: 'row' }, [U.el('span', { class: 'dim' }, 'Object'),
           qType, qVal, qBtn, qBtnR, clearButton('celestrak', 'CelesTrak', status)]),
         U.el('div', { class: 'src-hint' },
-          'Object queries hit gp.php directly: CATNR (one request per NORAD id), ' +
-          'INTDES (whole launch; a piece letter narrows it), NAME (substring). ' +
-          'No account needed; results merge into the catalogue without replacing it. ' +
-          'There is deliberately no group fetch — identifying against a subset ' +
-          'makes a negative result meaningless.'),
+          'Single-object gp.php queries, no account; results merge additively. ' +
+          'Group fetch is deliberately absent — a subset makes a negative ' +
+          'result meaningless.'),
         status,
         U.el('div', { class: 'sep' }),
         U.el('div', { class: 'row' }, [scBtn, scStatus]),
         U.el('div', { class: 'src-hint' },
-          'Metadata only (RCS / type / owner / launch) — improves magnitude ' +
-          'estimates and the info panel; it does not load orbital elements.'),
+          'Metadata only (RCS / type / owner / launch) — does not load ' +
+          'orbital elements.'),
       ]));
     }
 
@@ -474,10 +468,8 @@
         U.el('div', { class: 'row' }, [U.el('span', { class: 'dim' }, 'Zip / TLE URL'), urlIn, btn,
           clearButton('mccants', 'McCants', status), dl]),
         U.el('div', { class: 'src-hint' },
-          'Mike McCants classified/integrated TLE zips, or any URL serving a .zip/.tle/.txt ' +
-          'of TLEs. Classified objects are absent from the public catalogue entirely, so ' +
-          'this is the set that explains a trail nothing else accounts for. Successive ' +
-          'files merge.'),
+          'Classified TLE zips (or any .zip/.tle/.txt URL) — objects absent ' +
+          'from the public catalogue. Files merge.'),
         status,
       ]));
     }
@@ -509,9 +501,8 @@
         U.el('div', { class: 'row', style: 'margin-top:6px' }, [labelIn, btn,
           clearButton('paste', 'pasted', status)]),
         U.el('div', { class: 'src-hint' },
-          'Pasted objects merge into the catalogue (newest elements win against any ' +
-          'duplicate NORAD) and persist across restarts. Successive pastes accumulate; ' +
-          '✕ clear removes them all.'),
+          'Pastes merge (newest elements win) and persist across restarts; ' +
+          '✕ clear removes them.'),
         status,
       ]));
     }

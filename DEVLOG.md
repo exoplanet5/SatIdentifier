@@ -982,6 +982,13 @@ moves. The label was the bug: "Fetch full SATCAT" reads as a catalogue loader.
   catnum/catnum5 round trips at 100000/339999. test_ports [3] updated to
   pin the two-provider layout, the button order, the source notes, and the
   metadata relabel (76 checks).
+- **Follow-up (same day, user request — panel too wordy)**: the two
+  full-catalogue hints are now credentials-only ("No account needed." /
+  "Free space-track.org account required — saved in the Space-Track tab
+  below.") — the button labels already name the provider — and every tab
+  hint is cut to one line. The legacy-file caveat lives solely on the
+  load-time status line via payload `notes[]`, shown only when a load
+  actually came from `catalog.txt`. test_ports pins the terse wording.
 
 ## 13. Running the checks
 

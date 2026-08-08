@@ -1098,8 +1098,11 @@ so it carries none of the round-1 trap — the ban stays on *group* fetches.
 provider.** The window's header block carries **Load full catalogue
 (CelesTrak)** — no account needed — ABOVE **Load full catalogue (Space-Track)**
 — the complete set, analyst objects included, credentials required — each with
-its ⟳ force-refresh, its own status line, and a one-line source note beneath
-it. Each replaces only its OWN tag's set (`replace:true` on `celestrak` /
+its ⟳ force-refresh, its own status line, and a one-line **credentials-only**
+hint beneath it (round 21 follow-up: the labels already name the provider, and
+provider caveats such as the legacy-file warning surface via payload `notes[]`
+on the status line when they apply, never as standing text; tab hints are
+likewise one line). Each replaces only its OWN tag's set (`replace:true` on `celestrak` /
 `spacetrack`), so the freshness block's provenance stays truthful whichever is
 pressed; selected-object queries stay in the tabs below. The CelesTrak tab's
 former "Fetch full SATCAT" button is relabelled **Fetch SATCAT metadata**

@@ -372,9 +372,12 @@ console.log('\n[3] sources.js — freshness banner and object counts');
     fresh.indexOf('Load full catalogue (CelesTrak)') <
       fresh.indexOf('Load full catalogue (Space-Track)') &&
     /celestrak\/full/.test(SRC));
-  ok('each provider button carries its source note',
-    /Source: CelesTrak bulk catalogue/.test(fresh) &&
-    /Source: Space-Track full GP/.test(fresh));
+  // Round 21 follow-up: the hints are credentials-only — the button labels
+  // name the provider, and caveats travel on the status line via notes[].
+  ok('provider hints are credentials-only',
+    /No account needed\./.test(fresh) &&
+    /Free space-track\.org account required/.test(fresh) &&
+    !/Source: CelesTrak/.test(fresh) && !/Source: Space-Track/.test(fresh));
   ok('keeps the Space-Track / CelesTrak / McCants / paste / cache tabs',
     ['Space-Track', 'CelesTrak', 'McCants', 'Paste TLE', 'Cache'].every(t => fresh.includes(t)));
   ok('CelesTrak tab is object-query only — no group fetch',
